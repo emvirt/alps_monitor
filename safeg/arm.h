@@ -189,6 +189,9 @@
 .macro CP15_SCR_READ treg
   mrc p15, 0, \treg, c1, c1, 0
 .endm
+.macro CP15_NSACR_WRITE treg
+  mcr p15, 0, \treg, c1, c1, 2
+.endm
 .macro CP15_VBAR_READ treg
   mrc p15, 0, \treg, c12, c0, 0
 .endm

@@ -1,4 +1,4 @@
-OBJS-C    = safeg_start.o
+OBJS-C    = safeg_start.o serial.o
 OBJS-A    = safeg.o crt0-safeg.o
 LSCRIPT   = safeg.lds
 LOADIMAGE = safeg
@@ -40,7 +40,8 @@ depend.mk: $(SRCS) entry.h
 -include depend.mk
 
 clean:
-	$(RM) -f entry.h depend.mk
+#	$(RM) -f entry.h depend.mk
+	$(RM) -f depend.mk
 	$(RM) -f $(LSCRIPT)
 	$(RM) -f safeg.bin trust.bin non-trust.bin
 	@find \( -name '*~*' -or -name '*.o' -or -name '*.i' \) -print -delete

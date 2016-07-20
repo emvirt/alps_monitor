@@ -60,10 +60,7 @@ extern void SafeGStart(unsigned long *, unsigned long *);
 extern unsigned long MonitorVectorTableBase;
 
 #define STACK_SIZE 128          /* 128 byte stack */
-unsigned long smm_stack_0[STACK_SIZE / 4];
-unsigned long smm_stack_1[STACK_SIZE / 4];
-unsigned long smm_stack_2[STACK_SIZE / 4];
-unsigned long smm_stack_3[STACK_SIZE / 4];	//HJPARK
+unsigned long smm_stack[STACK_SIZE / 4];
 /* 
  * 4コアサポート時にコンテキストエリアを参照するためのテーブル 
  */
@@ -97,9 +94,8 @@ unsigned long *const nt_base_table[4] = {
 	&NtContextBase2,
 	&NtContextBase3
 };
-//kwlee
 unsigned long *const t_base_table[4] = {
-	&TContextBase0,//kwlee
+	&TContextBase0,
 	&TContextBase1,
 	&TContextBase2,
 	&TContextBase3
@@ -107,12 +103,9 @@ unsigned long *const t_base_table[4] = {
 
 
 /* stack top をアセンブラのために設定する */
-unsigned long *const _smm_stack_0 = &smm_stack_0[STACK_SIZE / 4 - 1];	//hjpark
-unsigned long *const _smm_stack_1 = &smm_stack_1[STACK_SIZE / 4 - 1];
-unsigned long *const _smm_stack_2 = &smm_stack_2[STACK_SIZE / 4 - 1];
-unsigned long *const _smm_stack_3 = &smm_stack_3[STACK_SIZE / 4 - 1];
+unsigned long *const _smm_stack = &smm_stack[STACK_SIZE / 4 - 1];
 
-//kwlee const unsigned long nt_start_address = 0;//normal_start_address;
+const unsigned long nt_start_address = 0;//normal_start_address;
 
 #ifdef SAFEG_MEASUREMENTS_ENABLE
 unsigned long int safeg_latency[MAX_COUNT];
@@ -121,6 +114,7 @@ unsigned int latency_counter;
 
 int QbSerialProbe(void);
 int QbSerialSend(void *Buffer, unsigned int Size);
+
 /*
  * safeg自身の初期化を行う
  */
@@ -204,12 +198,8 @@ arm_main()
 {
     safeg_init();
     misc_init();
-
-/*   SafeGStart((unsigned long *) secure_start_address,	//kwlee
-               (unsigned long *) normal_start_address);	*/
-
-    SafeGStart((unsigned long *) normal_start_address,  //kwlee
-               (unsigned long *) secure_start_address); 
+    SafeGStart((unsigned long *) normal_start_address,	//kwlee
+               (unsigned long *) secure_start_address);
     return 0;
 }
 

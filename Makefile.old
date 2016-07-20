@@ -26,7 +26,7 @@ SAFEG_KZMCA9_NONTRUST_BIN2  = /_out/debug_p1852/images/cpu_stage2.bin
 SAFEG_KZMCA9_NONTRUST_OS   = ../kernel
 SAFEG_KZMCA9_NONTRUST_OS_ELF  = vmlinux
 SAFEG_KZMCA9_NONTRUST_OS_BIN  = arch/arm/boot/zImage
-SAFEG_KZMCA9_TOOLPREFIX = arm-none-eabi-
+#SAFEG_KZMCA9_TOOLPREFIX = arm-none-eabi-
 SAFEG_KZMCA9_TOOLPREFIX = /opt/freescale/usr/local/gcc-4.6.2-glibc-2.13-linaro-multilib-2011.12/fsl-linaro-toolchain/bin/arm-fsl-linux-gnueabi-
 SAFEG_KZMCA9_UBOOTBIN   = res/prebuilt/board_kzmca9/prebuilt-kzmca9-nt-uboot
 SAFEG_KZMCA9_CPU        = cortex-a9
@@ -50,8 +50,8 @@ NONTRUST_OS_ELF  ?= ${SAFEG_${BOARD}_NONTRUST_OS_ELF}
 TOOLPREFIX ?= ${SAFEG_${BOARD}_TOOLPREFIX}
 UBOOTBIN   ?= ${SAFEG_${BOARD}_UBOOTBIN}
 
-#BIN     = $(BINDIR)/trust.elf $(BINDIR)/non-trust.elf $(BINDIR)/safeg.elf
-BIN	= $(BINDIR)/safeg.elf
+BIN     = $(BINDIR)/trust.elf $(BINDIR)/non-trust.elf $(BINDIR)/safeg.elf
+
 CC      = $(TOOLPREFIX)gcc
 CXX     = $(TOOLPREFIX)cpp
 AS      = $(TOOLPREFIX)as
@@ -77,14 +77,13 @@ export CC CXX AS OBJCOPY OBJFLAGS CFLAGS LDFLAGS ASFLAGS CPU
 
 .PHONY: help all clean
 
-#all: $(BIN) $(BINDIR)/safeg.sym
-all: $(BIN)
+all: $(BIN) $(BINDIR)/safeg.sym
 
 $(BINDIR)/safeg.elf: safeg/entry.h
 	cd safeg; $(MAKE)
 ifneq ($(BINDIR),safeg)
-	cp safeg/safeg.elf $(BINDIR)/safeg.elf
-	cp safeg/safeg.bin $(BINDIR)/safeg.bin
+	mv safeg/safeg.elf $(BINDIR)/safeg.elf
+	mv safeg/safeg.bin $(BINDIR)/safeg.bin
 endif
 
 $(BINDIR)/trust.elf: $(TRUST)/$(TRUST_HEADER)/safeg.h
@@ -114,8 +113,8 @@ $(BINDIR)/safeg.sym: $(BIN)
 	$(NM) $(BINDIR)/trust.elf >> $(BINDIR)/safeg.sym
 	$(NM) $(BINDIR)/non-trust.elf >> $(BINDIR)/safeg.sym
 
-#safeg/entry.h: $(BINDIR)/trust.elf
-#	$(READELF) -h $(BINDIR)/trust.elf | grep "Entry point address" | gawk '{print "#define secure_start_address\t"$$4}' > safeg/entry.h
+safeg/entry.h: $(BINDIR)/trust.elf
+	$(READELF) -h $(BINDIR)/trust.elf | grep "Entry point address" | gawk '{print "#define secure_start_address\t"$$4}' > safeg/entry.h
 
 $(TRUST)/$(TRUST_HEADER)/safeg.h: $(BINDIR)/non-trust-os.elf
 	$(READELF) -s $(BINDIR)/non-trust-os.elf | grep "tegra_secondary_startup" | gawk '{print "#define secondary_startup_address\t(0x"$$2"-0x30000000)"}' > $(TRUST)/$(TRUST_HEADER)/safeg.h

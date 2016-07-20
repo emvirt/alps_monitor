@@ -63,6 +63,10 @@
 #define     T_SMC_REBOOT_OK      0 /* no error */
 #define     T_SMC_REBOOT_ERR     1 /* error, return to T */
 
+#define T_SMC_SWITCH_BOOT 2 /*HJPARK switch to NT and boot NT*/
+
+#define T_SMC_WFI 3 /*HJPARK set NT cores wfi*/
+
 #define NT_SMC_SWITCH 0 /* switch to T */
 #define     NT_SMC_SWITCH_OK     0 /* no error */
 #define     NT_SMC_SWITCH_ERR    1 /* error, return to NT */
@@ -75,5 +79,18 @@
 #define     NT_SMC_INV_CACHE_ALL  4 /* invalidate both caches */
 
 #define NT_SMC_SOFTIRQ 2 /* generate a software interrupt in Trust world */
+
+#define NT_SMC_START_DOM_SCHED 3
+#define NT_SMC_STOP_DOM_SCHED 4
+
+//#define NT_SMC_INIT_CORE 5
+#define NT_SMC_SET_IPI 5
+
+#define NT_SMC_TZIPC 6
+
+#define NT_SMC_BOOT 7	//kwlee
+
+#define NT_SMC_IPI 8	//HJPARK
+
 
 #endif /* _SAFEG_SYSCALLS_H_ */
