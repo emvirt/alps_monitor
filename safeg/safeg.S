@@ -404,7 +404,7 @@ trusted_irq:
 fiq_handler:
     cpu_id sp
     cmp sp, #1
-    beq t_smc_wfi		/*HJPARK: FIQ from normal core*/
+    beq t_smc_wfi		/*HJPARK: FIQ from core1*/
 
     CP15_SCR_READ sp
     tst sp, #SCR_BIT_0_NS
@@ -452,7 +452,7 @@ trusted_fiq:
     movs pc, lr
 
 2:
-    ldr r2, =0x8003ffc4		/*HJPARK: Linux 'vector_swi' address + 0x4*/
+    ldr r2, =0x8003ff84		/*HJPARK: Linux 'vector_swi' address + 0x4*/
     cmp r2, r1
     bne 1f
     orr r0, r0, #CPSR_BIT_6_F
@@ -589,14 +589,9 @@ t_smc_handler:
     /* r0 has the syscall, branch to the appropriate SMC handler */
     cmp r0, #T_SMC_REBOOT
     beq t_smc_reboot
-/*
-    cmp r0, #T_SMC_SWITCH_BOOT
-    beq t_smc_switch_boot
 
-    cmp r0, #T_SMC_WFI
-    beq t_smc_wfi
-*/
 t_smc_switch:
+/*HJPARK: world switch, secure to normal*/ 
 #ifdef SAFEG_KZMCA9
     /* sp <= t_base_table[cpu_id] */
     GetCtBase t_base_table
@@ -606,33 +601,9 @@ t_smc_switch:
     srsia   #CPSR_MODE_MONITOR  // [sp_mon] = lr_mon, [sp_mon, #4] = spsr_mon
     SaveState                   // S-Context = Context
 
-    mov r0, #0
-
-t_smc_switch_boot:
-    cmp r0, #0
-    moveq r4, #0
-    movne r4, #1
-
-    cpu_id r3
-    lsl r3, r3, #2
-        
-    /*ICDISR IPI8*/
-    ldr r1, =0xf2a01080
-    ldr r0, =0xfffffdfe
-    str r0, [r1]
-
-    /*ICCICR NT only*/
-    ldr r1, =0xf2a00100
-    ldr r0, =0xE
-    str r0, [r1]
-
-    /*ICCEOIR IPI10*/
-    ldr r1, =0xf2a00110
-    mov r0, #10
-    str r0, [r1]
-
 t_smc_set:
-    /*CSU uSDHC1 uSDHC3 HDMI GPU3D*/
+/*HJPARK: set core1 interrupt*/
+    /*HJPARK: set CSU register*/
     ldr r1, =0xf41c0020		//USB
     ldr r0, =0x00bb00bb
     str r0, [r1]
@@ -648,7 +619,8 @@ t_smc_set:
     ldr r0, =0x00bb003f
     str r0, [r1]    
 
-    /*ICDISR*/
+/*HJPARK: set GIC register*/
+    /*ICDISR initialize SPI interrupt as IRQ*/
     ldr r1, =0xf2a01084
     ldr r2, =0xf2a01094
     ldr r0, =0xffffffff
@@ -657,107 +629,67 @@ t_smc_set:
     cmp r1, r2
     bne 1b
 
-    /*ICDISR uSDHC3 UART4 GPU3D HDMI*/
+    /*ICDISR set secure world dedicated interrupts as FIQ*/
     ldr r1, =0xf2a01084
-    ldr r0, =0xdefffdff		//UART4 61 uSDHC 56 GPU3D 41
+    ldr r0, =0xdefffdff		//UART4 61 uSDHC3 56 GPU3D 41
     str r0, [r1]
     add r1, r1, #8
     ldr r0, =0xfff3ffff		//HDMI 146,147
     str r0, [r1]
 
-    /*ICDDCR*/
+    /*ICDDCR enable interrupt to core1 */
     ldr r1, =0xf2a01000
     ldr r0, =0x3
     str r0, [r1]
 
-    /*ICDISER uart3 uSDHC1 sdma*/
+    /*ICDISER enable normal world dedicated interrupts triggered uart3 uSDHC1 sdma*/
     ldr r1, =0xf2a01104
-    ldr r0, =0x10400004
+    ldr r0, =0x10400004		//UART3 60, uSDHC1 54, sdma 34
     str r0, [r1]
 
-    /*ICDICER uart4 uSDHC3 GPU3D HDMI*/
+    /*ICDICER disable secure world dedicated interrupts triggered uart4 uSDHC3 GPU3D HDMI*/
     ldr r1, =0xf2a01184
-    ldr r0, =0x21000200
+    ldr r0, =0x21000200		//UART4 61, uSDHC3 56, GPU3D 41
     str r0, [r1]
-    add r1, r1, #8		//HDMI
-    ldr r0, =0xfff3ffff
+    add r1, r1, #8		
+    ldr r0, =0xfff3ffff		//HDMI 146,147
     str r0, [r1]
 
     mov pc, lr
-
-    cmp r4, #0
-
-    /*ICDISGR IPI10
-    ldreq r1, =0xf2a01f00
-    ldreq r0, =0x0100000a
-    streq r0, [r1]
-    */
-    /*ICDICPR GPT
-    ldr r1, =0xf2a01288
-    ldr r0, =0x00800000
-    str r0, [r1]
-
-    ldr r1, =0xe9802008
-    mov r0, #1
-    str r0, [r1]
-*/
-
-2:  
-    /* load the non-trust context state */
-#ifdef SAFEG_KZMCA9
-    mrc p15, 0, sp, c0, c0, 5 /* プロセッサIDの取得 */
-    and sp, sp, #0x0f    /* 下位4bitのみ有効(sp = cpu_id) */
-    ldr r5, =nt_base_table
-    add r5, r5, #0x72000000    //kwlee
-    ldr sp, [r5, sp, asl #2] /* sp = nt_base_table[cpu_id] */
-    add sp, sp, #0x72000000   //kwlee
-
-#else
-    ldr sp, =NtContextBase0
-#endif /* SAFEG_KZMCA9 */
-
-    LoadState                   // Context = N-Context
-
-
-    /* flush the branch target address cache */
-    CP15_Flush_BTAC lr          // flush BTAC (corrupts lr_mon)
-
-    CP15_SCR_READ lr           // cp15_SCR = lr_mon (N-World Config)
-    mov lr, #SCR_NS
-    CP15_SCR_WRITE lr
-
-    b t_smc_switch_exit 	//hjpark
 
 t_smc_wfi_2:
     sub lr, lr, #4
     movs pc, lr
 
 t_smc_wfi:
-    ldr sp, =0xf2a01200
+/*HJPARK: IPI from core0*/
+    ldr sp, =0xf2a01200		//check if IPI#8
     ldr sp, [sp]
     tst sp, #0x100
     bne 1f
 
-    tst sp, #0x80
+    tst sp, #0x80		//check if IPI#7
     beq t_smc_wfi_2
 
+/*HJPARK: IPI#7, check the interupt is valid*/
     ldr sp, =_smm_stack_1
-    add sp, sp, #0x72000000
+    add sp, sp, #0x72000000	/*convert stack physical address to virtual address*/
     ldr sp, [sp]
     add sp, sp, #0x72000000
     push {r0, r1}
-    ldr r0, =0xf2a01080
+    ldr r0, =0xf2a01080		/*ICDISPR set IPI7 as IRQ*/
     ldr r1, =0xfffffffe
     str r1, [r0]
     mrs r0, spsr
-    tst r0, #0x80
+    tst r0, #0x80		/*check if IPI7 triggered at IRQ handler*/
     ldm sp!, {r0, r1}
 
-    bne t_smc_wfi_2
+    bne t_smc_wfi_2		/*set core1 WFI if the IPI is invalid*/
 
     b irq_handler
 
 1:  
+/*HJPARK: if IPI is #8, start booting normal world*/
 #ifdef SAFEG_KZMCA9
     /* sp <= t_base_table[cpu_id] */
     GetCtBase t_base_table
@@ -771,26 +703,26 @@ t_smc_wfi:
     mrc p15, 0, sp, c0, c0, 5 
     and sp, sp, #0x0f    
     ldr r5, =nt_base_table
-    add r5, r5, #0x72000000    //kwlee
+    add r5, r5, #0x72000000	/*HJPARK: convert stack physical address to virtual address*/ 
     ldr sp, [r5, sp, asl #2] 
-    add sp, sp, #0x72000000   //kwlee
+    add sp, sp, #0x72000000   
 #else
     ldr sp, =NtContextBase0
 #endif   /*SAFEG_KZMCA9*/ 
-
-    /*ICCIAR IPI8*/
+    /*HJPARK: ICCIAR set IPI8 state active*/
     ldr r0, =0xf2a0010c
     ldr r0, [r0]
 
-    /*ICCEOIR IPI8*/
+    /*HJPARK: ICCEOIR end IPI8 interrupt*/
     ldr r1, =0xf2a00110
     str r0, [r1]
 
-    /*ICDISR*/
+    /*HJPARK: ICDISR set IPI7 as FIQ*/
     ldr r1, =0xf2a01080
     ldr r0, =0xffffff7e
     str r0, [r1]
 
+    /*HJPARK: ICCICR enable core1 to get interrupt*/
     ldr r1, =0xf2a00100
     ldr r0, =0xF
     str r0, [r1]
@@ -798,18 +730,6 @@ t_smc_wfi:
     bl t_smc_set
     b NTSecondaryBoot
 
-    /* flush the branch target address cache */
-/*    CP15_Flush_BTAC lr          // flush BTAC (corrupts lr_mon)
-
-    CP15_SCR_READ lr           // cp15_SCR = lr_mon (N-World Config)
-    mov lr, #SCR_NS
-    CP15_SCR_WRITE lr
-    rfeia sp
-
-t_smc_wfi_wait:
-    wfi
-    b t_smc_wfi_wait
-*/
 t_smc_switch_exit:
     /* switch to non-trust world */
     rfeia   sp                  // load cpsr and pc from NtContext
@@ -860,24 +780,22 @@ t_smc_reboot: /* TODO: Test this! */
     b t_smc_switch
 
 t_smc_boot:
+/*HJPARK: initialize core1*/
     mrs r0, cpsr
     bic r0, r0, #0xC0
     msr cpsr, r0
-    /*ICCICR*/
-    mov32 r0, 0x00a00100
+
+    /*HJPARK: ICCICR enable core1 to get interrupts*/
+    mov32 r0, 0x00a00100	/*GIC CPU interface register base address*/
     mov r1, #0xF
     str r1, [r0]
 
-    /*ICCPMR*/
+    /*HJPARK: ICCPMR set core1 to get only interrupts with higer priority than 0xF0*/
     add r0, r0, #4
     mov r1, #0xF0
     str r1, [r0]
 
-    /*ICDIPR*/
-    mov32 r0, 0x00a01400
-    mov32 r1, 0x00a01420
-    mov32 r2, 0xa0a0a0a0
-
+    /*HJPARK: set page table entry to map monitor address space*/ 
     mov32 r0, 0x10004000
     mov32 r1, 0x1ffc
     add r0, r0, r1
@@ -889,10 +807,9 @@ t_smc_boot:
 
     mov32 r0, 0x10004000
     mcr p15, 0, r0, c2, c0, 0		//translation table base 0
-//    mrc p15, 0, r0, c1, c0, 0		//system control , mmu_on
-//    orr r0, r0, #1
-    mov32 r0, 0x10c53c7d
-    mcr p15, 0, r0, c1, c0, 0           
+
+    mov32 r0, 0x10c53c7d		
+    mcr p15, 0, r0, c1, c0, 0           //system control register
     
     mov r0, #0x41
     mcr p15, 0, r0, c1, c0, 1		//auxiliary control
@@ -906,51 +823,36 @@ t_smc_boot:
     mov r0, #0x0
     mcr p15, 0, r0, c7, c5, 0 		//Invalidate I-Cache
 
-        mov     r0, #0
-        mcr     p15, 2, r0, c0, c0, 0
-        mrc     p15, 1, r0, c0, c0, 0
+    mov     r0, #0
+    mcr     p15, 2, r0, c0, c0, 0
+    mrc     p15, 1, r0, c0, c0, 0
+    ldr     r1, =0x7fff
+    and     r2, r1, r0, lsr #13
+    ldr     r1, =0x3ff
+    and     r3, r1, r0, lsr #3  @ NumWays - 1
+    add     r2, r2, #1          @ NumSets
+    and     r0, r0, #0x7
+    add     r0, r0, #4          @ SetShift
+    clz     r1, r3              @ WayShift
+    add     r4, r3, #1          @ NumWays
+1:  sub     r2, r2, #1          @ NumSets--
+    mov     r3, r4              @ Temp = NumWays
+2:  subs    r3, r3, #1          @ Temp--
+    mov     r5, r3, lsl r1
+    mov     r6, r2, lsl r0
+    orr     r5, r5, r6          @ Reg = (Temp<<WayShift)|(NumSets<<SetShift)
+    mcr     p15, 0, r5, c7, c6, 2
+    bgt     2b
+    cmp     r2, #0
+    bgt     1b
 
-        ldr     r1, =0x7fff
-        and     r2, r1, r0, lsr #13
-
-        ldr     r1, =0x3ff
-
-        and     r3, r1, r0, lsr #3  @ NumWays - 1
-        add     r2, r2, #1          @ NumSets
-
-        and     r0, r0, #0x7
-        add     r0, r0, #4          @ SetShift
-
-        clz     r1, r3              @ WayShift
-        add     r4, r3, #1          @ NumWays
-1:      sub     r2, r2, #1          @ NumSets--
-        mov     r3, r4              @ Temp = NumWays
-2:      subs    r3, r3, #1          @ Temp--
-        mov     r5, r3, lsl r1
-        mov     r6, r2, lsl r0
-        orr     r5, r5, r6          @ Reg = (Temp<<WayShift)|(NumSets<<SetShift)
-        mcr     p15, 0, r5, c7, c6, 2
-        bgt     2b
-        cmp     r2, #0
-        bgt     1b
-//        dsb
-//        isb
-//        mov     pc, lr
-
-/*
-    mov r0, #0
-    mcr p15, 2, r0, c0, c0, 0
-
-    mov32 r0, 0xc0001fe0
-    mcr p15, 0, r0, c7, c6, 2
-*/
 t_smc_boot_2:
     wfi
     b t_smc_boot_2
 
 nt_smc_handler:
     ldr sp, =_smm_stack_1
-    add sp, sp, #0x72000000
+    add sp, sp, #0x72000000	/*HJPARK: convert stack physical address to virtual address*/
     ldr sp, [sp]
     add sp, sp, #0x72000000
 
@@ -965,32 +867,13 @@ nt_smc_handler:
     cmp r0, #NT_SMC_INV_CACHE
     beq nt_smc_cache
 
-/* cylee: send tzipc ipi from normal world */
+    /* cylee: send tzipc ipi from normal world */
     cmp r0, #NT_SMC_TZIPC
     beq nt_smc_tzipc
-
+    /*HJPARK: restor IPI as FIQ*/
     cmp r0, #NT_SMC_SET_IPI
     beq nt_smc_set_ipi
-
-/*YSB
-    cmp r0, #NT_SMC_TZIPC
-    beq nt_smc_tzipc
-
-    cmp r0, #NT_SMC_START_DOM_SCHED
-    mov32eq r0, Sched_flag
-    moveq sp, #0x1
-    streq sp, [r0]
-    beq nt_smc_return_to_nt
-
-    cmp r0, #NT_SMC_STOP_DOM_SCHED
-    mov32eq r0, Sched_flag
-    moveq sp, #0x0
-    streq sp, [r0]
-    beq nt_smc_return_to_nt
-*/    
-    cmp r0, #NT_SMC_BOOT        /*kwlee: turn to secure boot*/
-    beq nt_smc_boot
-    
+   
     cmp r0, #NT_SMC_IPI
     beq nt_smc_ipi
 
@@ -1005,133 +888,18 @@ nt_smc_switch:
 
     /* save NT world state */
 #ifdef SAFEG_KZMCA9
-//hjpark cpu_id 에 따라 sp 설정
     mrc p15, 0, sp, c0, c0, 5 /* プロセッサIDの取得 */
     and sp, sp, #0x0f    /* 下位4bitのみ有効(r4 = cpu_id) */
 
-    cmp sp, #0
-    ldreq sp, =nt_base_table
-    addeq sp, sp, #0x72000000
-    ldreq sp, [sp]
-    addeq sp, sp, #0x72000000
-
-    cmp sp, #1
-    ldreq sp, =nt_base_table
-    addeq sp, sp, #0x72000000
-    ldreq sp, [sp, #4]
-    addeq sp, sp, #0x72000000
-
-    cmp sp, #2
-    ldreq sp, =nt_base_table
-    addeq sp, sp, #0x72000000
-    ldreq sp, [sp, #8]
-    addeq sp, sp, #0x72000000
-
-    cmp sp, #3
-    ldreq sp, =nt_base_table
-    addeq sp, sp, #0x72000000
-    ldreq sp, [sp, #12]
-    addeq sp, sp, #0x72000000
-
-//    ldr r0, =nt_base_table
-//    add r0, r0, #0x72000000     /*kwlee*/
-//    ldr sp, [r0, sp, asl #2] /* sp = nt_base_table[cpu_id] */    
-//    add sp, sp, #0x72000000     /*kwlee*/
+    ldr sp, =nt_base_table
+    ldr sp, [sp]
 #else
     ldr sp, =NtContextBase0
 #endif /* SAFEG_KZMCA9 */
     srsia #CPSR_MODE_MONITOR
 
-
     SaveState                   // N-Context = Context
 
-//    cmp r1, #T_SMC_SWITCH_HANDLER
-//    beq nt_smc_switch_raise_handler
-
-    cpu_id r3
-    lsl r3, r3, #2
-    
-    /*ICDISPR IPI clear*/
-    ldr r1, =0xf2a01200
-    ldr r0, [r1]
-    and r0, r0, #0xff
-    cmp r0, #0
-
-    ldrne r1, =0xf2a01280
-    strne r0, [r1]
-
-    mov32ne r1, nt_save_IPI
-    addne r1, r1, r3
-    addne r1, r1, #0x72000000
-    strne r0, [r1]
-
-    /*IPI clear check*/
-    ldrne r1, =0xf2a01200
-    ldrne r0, [r1]
-    andne r0, r0, #0xff
-    cmpne r0, #0
-
-    /*ICDISR*/
-    ldr r1, =0xf2a01080
-    mov r0, #0
-    str r0, [r1]
-
-    /*ICDISPR IPI*/
-    mov32 r1, t_save_IPI
-    add r1, r1, r3
-    add r1, r1, #0x72000000
-    ldr r0, [r1]
-    mov r2, #0
-    str r2, [r1]
-    ldr r1, =0xf2a01200
-    str r0, [r1]
-
-    /*ICCEOIR IPI9*/
-    ldr r1, =0xf2a00110
-    mov r0, #9
-    str r0, [r1]
-
-    /*ICCICR T only */
-    ldr r1, =0xf2a00100
-    ldr r0, =0xD
-    str r0, [r1]
-
-//    cmp r3, #0			//r3 CPU_ID
-//    bne 2f
-
-   /*ICDISR set all interrupt secure */
-    ldr r1, =0xf2a01084
-    ldr r2, =0xf2a01094
-    mov r0, #0
-1:  str r0, [r1]
-    add r1, r1, #0x4
-    cmp r1, r2
-    bne 1b
-
-    /*ICDISR uSDHC1 UART3 sdma*/
-    ldr r1, =0xf2a01084
-    ldr r0, =0x10400004
-    str r0, [r1]
-
-    /*ICDISER uart4 uSDHC3 GPU3D HDMI*/
-    ldr r1, =0xf2a01104
-    ldr r0, =0x21000200
-    str r0, [r1]
-    add r1, r1, #8              //HDMI
-    ldr r0, =0x000c0000
-    str r0, [r1]
-
-    /*ICDICER uart3 uSDHC1 sdma*/
-    ldr r1, =0xf2a01184
-    ldr r0, =0x10400004
-    str r0, [r1]
-
-    /*ICDDCR*/
-    ldr r1, =0xf2a01000
-    ldr r0, =0x3
-    str r0, [r1]
-
-2:
     /*
      * In S_USR_R1 we have  &ret_args, get it to r6 (SaveState already
      * corrupted r6,r7,r12) and write args (r1-r2) in there
@@ -1140,48 +908,43 @@ nt_smc_switch:
     mrc p15, 0, r6, c0, c0, 5 /* プロセッサIDの取得 */
     and r6, r6, #0x0f    /* 下位4bitのみ有効(r4 = cpu_id) */
     ldr r5, =t_area_table
-    add r5, r5, #0x72000000     /*kwlee*/
+    add r5, r5, #0x72000000
     ldr r6, [r5, r6, asl #2] /* sp = t_area_table[cpu_id] */  
-    add r6, r6, #0x72000000     /*kwlee*/
+    add r6, r6, #0x72000000
 #else
     ldr r6, =TContextSavedArea0  // r6 = TContextSavedArea
 #endif /* SAFEG_KZMCA9 */
-/*    ldr r6, [r6, #4]            // r6 = *(S_USR_R1) = ret_args
+/*  ldr r6, [r6, #4]            // r6 = *(S_USR_R1) = ret_args
     str r1, [r6, #0]            // ret_args->arg0 = r1
     str r2, [r6, #4]            // ret_args->arg1 = r2
 */
     b	nt_smc_switch_exit
 
 nt_smc_ipi:
-   /* go to secure world, to save NT state in secure memory */
+/*HJPARK: set GIC register and enable secure dedicated interrupts*/
     mov     r0, #SCR_S          // lr_mon = Secure World SCR config
     CP15_SCR_WRITE  r0          // cp15_SCR = lr_mon (S-World Config)
 
-    /*ICDISR*/
+    /*ICDISR set secure dedicated interrupts as FIQ*/
     ldr r0, =0xf2a01084
     ldr sp, =0xdefff01f		//UART4 61 uSDHC3 56 GPU3D 41 IPU 40-37
     str sp, [r0]
 
-    /*ICDISER*/
+    /*ICDISER enable secure dedicated interrupts*/
     ldr r0, =0xf2a01104
-    ldr sp, =0x21000fe0
+    ldr sp, =0x21000fe0		//UART 61 uSDHC3 56 GPU3D 41 IPU 40-37
     str sp, [r0]
     add r0, r0, #8
-    ldr sp, =0x000c0000
+    ldr sp, =0x000c0000		//HDMI 146, 147
     str sp, [r0]
 
-    /*ICDIPTR*/
+    /*ICDIPTR set secure dedicated interrupts passed core0*/
     ldr r0, =0xf2a01824
     ldr sp, =0x0101010f
     str sp, [r0]
     add r0, r0, #4
     ldr sp, =0x01010101
     str sp, [r0]
-/*
-add r0, r0, #4
-ldr sp, =0x0f0f0f01
-str sp, [r0]
-*/
     add r0, r0, #0x10
     ldr sp, =0x0f0f0f01
     str sp, [r0]
@@ -1203,9 +966,9 @@ nt_smc_switch_exit:
     mrc p15, 0, sp, c0, c0, 5 /* プロセッサIDの取得 */
     and sp, sp, #0x0f    /* 下位4bitのみ有効(r4 = cpu_id) */
     ldr r5, =t_base_table
-    add r5, r5, #0x72000000     /*kwlee*/
+    add r5, r5, #0x72000000 
     ldr sp, [r5, sp, asl #2] /* sp = t_base_table[cpu_id] */  
-    add sp, sp, #0x72000000     /*kwlee*/
+    add sp, sp, #0x72000000
 #else
     ldr sp, =TContextBase0
 #endif /* SAFEG_KZMCA9 */
@@ -1228,9 +991,7 @@ nt_smc_switch_raise_handler:
       str r0, [sp, #0x14]
     LoadState
     ldr sp, =_smm_stack_0
-    //add sp, sp, #0x72000000
     ldr sp, [sp]
-    //add sp, sp, #0x72000000
     mov lr, #(CPSR_MODE_IRQ | CPSR_BIT_6_F | CPSR_BIT_7_I)
     str lr, [sp, #-4]!
     /* SAFEGベクタのアドレスはvectorbase + 0x20 */
@@ -1271,14 +1032,9 @@ nt_smc_cache_invalidate_allcache:
     mcr p15, 0, r0, c7, c14, 0
     mcr p15, 0, r0, c7, c5, 0
     b nt_smc_return_to_nt
-/*
-nt_smc_core:
-    // check arg0 in r1 to know what to invalidate 
-    mov32 r0, safeg_now_init_core
-    str r1, [r0] 	
-    b nt_smc_return_to_nt
-*/
+
 nt_smc_set_ipi:
+/*HJPARK: restore IPI7 and IPI8 as FIQ*/
     push {r0, r1}
     ldr r0, =0xf2a01080
     ldr r1, =0xfffffd7e
@@ -1292,13 +1048,8 @@ nt_smc_tzipc:
     str r1, [r0] 	
     b nt_smc_return_to_nt
 
-
 nt_smc_return_to_nt:
     movs pc, lr
-
-nt_smc_boot:		//kwlee
-    b nt_smc_switch
-
 
 /*
  * SCRのEAビットを立てたことによって，NT側がTrust領域にアクセスした際に
@@ -1412,10 +1163,11 @@ SafeGStart:
     .align 5
     .global SafeGSecondaryBoot
 SafeGSecondaryBoot:
+/*HJPARK: start initializing core1*/
     cps #CPSR_MODE_MONITOR		
     mov r0, #SCR_S                 	
-    CP15_SCR_WRITE r0			/*hjpark 모니터 모드 설정 및 SCR 레지스터 설정*/
-
+    CP15_SCR_WRITE r0		
+	
     cpu_id sp
     cmp sp, #1
     ldreq sp, =_smm_stack_1
@@ -1426,18 +1178,14 @@ SafeGSecondaryBoot:
     ldr sp, [sp]
 
     ldr r1, =MonitorVectorTableBase 
-    add r1, r1, #0x72000000	
+    add r1, r1, #0x72000000	/*HJPARK: convert vector table base address PA to VA*/
     CP15_MVBAR_WRITE r1
     ldr r1, =NSACR_SETTING
     CP15_NSACR_WRITE r1
-    ldr r0, =normal_secondary	/*normal 리눅스의 mx6_secondary_startup*/
+    ldr r0, =normal_secondary	/*HJPARK: normal boot loader entry point*/	
     ldr r0, [r0]
-//    cpu_id r2
-//    cmp r2, #1
-//    ldreq r1, =secure_secondary	/*secure 리눅스의 mx6_secondary_startup*/
-    ldr r1, =t_smc_boot	//normal에서 쓸 코어
-//    ldreq r1, [r1] 		//secure secondary 코어
-
+    ldr r1, =t_smc_boot
+	
     b SafeGStart
 
     .text
@@ -1445,58 +1193,9 @@ SafeGSecondaryBoot:
     .global NTSecondaryBoot
 NTSecondaryBoot:
     cps #CPSR_MODE_MONITOR
-/*
-#ifdef SAFEG_KZMCA9
-    mrc p15, 0, sp, c0, c0, 5
-    and sp, sp, #0x0f    
-*/
-    /* save trust r0-r1 registers in SafeG stack cause we need to use them */
-/*    cmp sp, #0
-    ldreq sp, =_smm_stack_0
-    cmp sp, #1
-    ldreq sp, =_smm_stack_1
-    cmp sp, #2
-    ldreq sp, =_smm_stack_2
-    cmp sp, #3
-    ldreq sp, =_smm_stack_3
 
-    add sp, sp, #0x72000000
-    ldr sp, [sp]
-    add sp, sp, #0x72000000
-#else
-    ldr sp, =NtContextBase0
-#endif */  /*SAFEG_KZMCA9*/ 
-
-/*hjpark MVBAR set
-    ldr r1, =MonitorVectorTableBase
-    add r1, r1, #0x72000000     //hjpark
-    CP15_MVBAR_WRITE r1
-*/
-/*hjpark NSACR set
-    ldr r1, =NSACR_SETTING
-    CP15_NSACR_WRITE r1
-
-    mov r1, #0x41
-    mcr p15, 0, r1, c1, c0, 1
-*/
     LoadState
 
-//    ldr r0, =normal_secondary   /*normal 리눅스의 mx6_secondary_startup*/
-//    add r0, r0, #0x72000000
-//    ldr r0, [r0]
-
-//    ldr r3, =NORMAL_CPSR_INIT_VALUE
-//    stmea sp, {r0, r3}
-/*
-    ldr lr, =turn_mmu_off
-    sub lr, lr, #0x72000000
-    mov pc, lr
-   
-turn_mmu_off:
-    mrc p15, 0, lr, c1, c0, 0           //system control , mmu_on
-    bic lr, lr, #1
-    mcr p15, 0, lr, c1, c0, 0     
-*/ 
     /* flush the branch target address cache */
     CP15_Flush_BTAC lr          // flush BTAC (corrupts lr_mon)
 
@@ -1507,6 +1206,7 @@ turn_mmu_off:
 
     mov lr, #0x15
     mcr p15, 0, lr, c3, c0, 0           //domain access control
+    
     /* switch to non-trust world */
     rfeia   sp                  // load cpsr and pc from NtContext
 
@@ -1519,19 +1219,12 @@ safeg_irq_handler_sp_core_2:
     .long 0x0
 safeg_irq_handler_sp_core_3:
     .long 0x0
-//hjpark
-t_smc_count:
-    .long 0x10
 
-//hjpark    
     .data
 normal_secondary:
-//hjpark wfi    
     .word 0x678006e0
-//    .word 0x304dbab4
 secure_secondary:
     .word 0x104eef9c
-//    .word 0x104eea1c
 
     .data
     .align 5

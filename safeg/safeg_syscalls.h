@@ -83,14 +83,13 @@
 #define NT_SMC_START_DOM_SCHED 3
 #define NT_SMC_STOP_DOM_SCHED 4
 
-//#define NT_SMC_INIT_CORE 5
-#define NT_SMC_SET_IPI 5
+#define NT_SMC_INIT_CORE 5
 
 #define NT_SMC_TZIPC 6
 
-#define NT_SMC_BOOT 7	//kwlee
+#define NT_SMC_SET_IPI 7
 
-#define NT_SMC_IPI 8	//HJPARK
+#define NT_SMC_IPI 8
 
 
 #endif /* _SAFEG_SYSCALLS_H_ */
