@@ -1,0 +1,916 @@
+---
+ Makefile                            |    2 
+ arch/arm/configs/pb1176nt_defconfig |   30 ++---
+ arch/arm/mach-realview/Kconfig      |    2 
+ include/linux/sched.h               |    4 
+ kernel/sched.c                      |    5 
+ safeg/Kconfig                       |   80 +++++++++++++
+ safeg/Makefile                      |    2 
+ safeg/README                        |   69 +++++++++++
+ safeg/safeg-debugfs.c               |   84 ++++++++++++++
+ safeg/safeg-rtasks.c                |   98 ++++++++++++++++
+ safeg/safeg-shvar.c                 |  209 ++++++++++++++++++++++++++++++++++++
+ safeg/safeg_latency.c               |   91 +++++++++++++++
+ safeg/safeg_latency.h               |   20 +++
+ safeg/safeg_syscalls.h              |   56 +++++++++
+ 14 files changed, 736 insertions(+), 16 deletions(-)
+
+--- a/Makefile
++++ b/Makefile
+@@ -597,7 +597,7 @@ export mod_strip_cmd
+ 
+ 
+ ifeq ($(KBUILD_EXTMOD),)
+-core-y		+= kernel/ mm/ fs/ ipc/ security/ crypto/ block/
++core-y		+= kernel/ mm/ fs/ ipc/ security/ crypto/ block/ safeg/
+ 
+ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
+ 		     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
+--- a/arch/arm/configs/pb1176nt_defconfig
++++ b/arch/arm/configs/pb1176nt_defconfig
+@@ -1,7 +1,7 @@
+ #
+ # Automatically generated make config: don't edit
+ # Linux kernel version: 2.6.24-arm1
+-# Thu Mar 13 15:35:23 2008
++# Sat Feb 27 11:59:41 2010
+ #
+ CONFIG_ARM=y
+ CONFIG_SYS_SUPPORTS_APM_EMULATION=y
+@@ -35,14 +35,11 @@ CONFIG_LOCALVERSION=""
+ # CONFIG_SWAP is not set
+ CONFIG_SYSVIPC=y
+ CONFIG_SYSVIPC_SYSCTL=y
+-# CONFIG_POSIX_MQUEUE is not set
+ # CONFIG_BSD_PROCESS_ACCT is not set
+-# CONFIG_TASKSTATS is not set
+ # CONFIG_USER_NS is not set
+ # CONFIG_PID_NS is not set
+-# CONFIG_AUDIT is not set
+ # CONFIG_IKCONFIG is not set
+-CONFIG_LOG_BUF_SHIFT=15
++CONFIG_LOG_BUF_SHIFT=17
+ # CONFIG_CGROUPS is not set
+ CONFIG_FAIR_GROUP_SCHED=y
+ CONFIG_FAIR_USER_SCHED=y
+@@ -152,6 +149,17 @@ CONFIG_ARCH_REALVIEW=y
+ #
+ # RealView platform type
+ #
++CONFIG_SAFEG=y
++CONFIG_SAFEG_VOL_RETURN=n
++# CONFIG_SAFEG_IRQ_GROUPS is not set
++CONFIG_SAFEG_IRQ_GROUP_1=0x000000FF
++CONFIG_SAFEG_IRQ_GROUP_2=0x0000FF00
++CONFIG_SAFEG_IRQ_GROUP_3=0xFFFF0000
++CONFIG_SAFEG_TASK_GROUPS=y
++CONFIG_SAFEG_TASK_GROUPS_NUMBER=2
++CONFIG_SAFEG_TASK_GROUP_1=7
++CONFIG_SAFEG_TASK_GROUP_2=9
++CONFIG_SAFEG_TASK_GROUP_3=99
+ # CONFIG_MACH_REALVIEW_EB is not set
+ # CONFIG_MACH_REALVIEW_PB11MP is not set
+ CONFIG_MACH_REALVIEW_PB1176=y
+@@ -263,7 +271,7 @@ CONFIG_SUSPEND_UP_POSSIBLE=y
+ #
+ # Networking
+ #
+-CONFIG_NET=y
++CONFIG_NET=n
+ 
+ #
+ # Networking options
+@@ -356,7 +364,6 @@ CONFIG_PREVENT_FIRMWARE_BUILD=y
+ # CONFIG_DEBUG_DRIVER is not set
+ # CONFIG_DEBUG_DEVRES is not set
+ # CONFIG_SYS_HYPERVISOR is not set
+-# CONFIG_CONNECTOR is not set
+ CONFIG_MTD=y
+ # CONFIG_MTD_DEBUG is not set
+ CONFIG_MTD_CONCAT=y
+@@ -436,10 +443,8 @@ CONFIG_MTD_ARM_INTEGRATOR=y
+ CONFIG_BLK_DEV=y
+ # CONFIG_BLK_DEV_COW_COMMON is not set
+ # CONFIG_BLK_DEV_LOOP is not set
+-# CONFIG_BLK_DEV_NBD is not set
+ # CONFIG_BLK_DEV_RAM is not set
+ # CONFIG_CDROM_PKTCDVD is not set
+-# CONFIG_ATA_OVER_ETH is not set
+ CONFIG_MISC_DEVICES=y
+ # CONFIG_EEPROM_93CX6 is not set
+ 
+@@ -600,7 +605,6 @@ CONFIG_SSB_POSSIBLE=y
+ # Multimedia devices
+ #
+ # CONFIG_VIDEO_DEV is not set
+-# CONFIG_DVB_CORE is not set
+ # CONFIG_DAB is not set
+ 
+ #
+@@ -723,7 +727,6 @@ CONFIG_RTC_LIB=y
+ # CONFIG_FS_POSIX_ACL is not set
+ # CONFIG_XFS_FS is not set
+ # CONFIG_GFS2_FS is not set
+-# CONFIG_OCFS2_FS is not set
+ # CONFIG_MINIX_FS is not set
+ # CONFIG_ROMFS_FS is not set
+ # CONFIG_INOTIFY is not set
+@@ -850,18 +853,17 @@ CONFIG_NLS_ISO8859_1=y
+ # CONFIG_NLS_KOI8_R is not set
+ # CONFIG_NLS_KOI8_U is not set
+ # CONFIG_NLS_UTF8 is not set
+-# CONFIG_DLM is not set
+ # CONFIG_INSTRUMENTATION is not set
+ 
+ #
+ # Kernel hacking
+ #
+-# CONFIG_PRINTK_TIME is not set
++CONFIG_PRINTK_TIME=y
+ CONFIG_ENABLE_WARN_DEPRECATED=y
+ CONFIG_ENABLE_MUST_CHECK=y
+ # CONFIG_MAGIC_SYSRQ is not set
+ # CONFIG_UNUSED_SYMBOLS is not set
+-# CONFIG_DEBUG_FS is not set
++CONFIG_DEBUG_FS=y
+ # CONFIG_HEADERS_CHECK is not set
+ CONFIG_DEBUG_KERNEL=y
+ # CONFIG_DEBUG_SHIRQ is not set
+--- a/arch/arm/mach-realview/Kconfig
++++ b/arch/arm/mach-realview/Kconfig
+@@ -1,6 +1,8 @@
+ menu "RealView platform type"
+ 	depends on ARCH_REALVIEW
+ 
++source "safeg/Kconfig"
++
+ config MACH_REALVIEW_EB
+ 	bool "Support RealView/EB platform"
+ 	select ARM_GIC
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1886,6 +1886,10 @@ extern void recalc_sigpending(void);
+ 
+ extern void signal_wake_up(struct task_struct *t, int resume_stopped);
+ 
++#ifdef CONFIG_SAFEG_VOL_RETURN
++extern void switch_hook(struct task_struct *next);
++#endif /* CONFIG_SAFEG_VOL_RETURN */
++
+ /*
+  * Wrappers for p->thread_info->cpu access. No-op on UP.
+  */
+--- a/kernel/sched.c
++++ b/kernel/sched.c
+@@ -3662,11 +3662,14 @@ need_resched_nonpreemptible:
+ 
+ 	sched_info_switch(prev, next);
+ 
++#ifdef CONFIG_SAFEG_VOL_RETURN
++	switch_hook(next);
++#endif /* CONFIG_SAFEG_VOL_RETURN */
++
+ 	if (likely(prev != next)) {
+ 		rq->nr_switches++;
+ 		rq->curr = next;
+ 		++*switch_count;
+-
+ 		context_switch(rq, prev, next); /* unlocks the rq */
+ 	} else
+ 		spin_unlock_irq(&rq->lock);
+--- /dev/null
++++ b/safeg/Kconfig
+@@ -0,0 +1,80 @@
++config SAFEG
++	bool "Support SafeG"
++	default y
++	help
++	  Compiles the SafeG module
++
++config SAFEG_VOL_RETURN
++	bool "Support SafeG voluntary return"
++	depends on SAFEG
++	default n
++	help
++	  Enable SafeG voluntary return latency framework. In particular the
++	  hooks in the sched.c file. It also adds the file safeg_latency.c
++	  to the compilation process.
++
++config SAFEG_IRQ_GROUPS
++	bool "Configure IRQ groups"
++	depends on SAFEG_VOL_RETURN
++	default y
++	help
++	  Enable configuration of IRQ groups
++
++config SAFEG_IRQ_GROUPS_NUMBER
++	int "Number of IRQ groups"
++	depends on SAFEG_IRQ_GROUPS
++	default 2
++	help
++	  Set the number of IRQ groups
++
++config SAFEG_IRQ_GROUP_1
++	hex "IRQ group 1" if (SAFEG_IRQ_GROUPS_NUMBER = 1 || SAFEG_IRQ_GROUPS_NUMBER = 2 || SAFEG_IRQ_GROUPS_NUMBER = 3)
++	default 0x000000FF
++	help
++	  IRQ group number 1
++
++config SAFEG_IRQ_GROUP_2
++	hex "IRQ group 2" if (SAFEG_IRQ_GROUPS_NUMBER = 2 || SAFEG_IRQ_GROUPS_NUMBER = 3)
++	default 0x0000FF00
++	help
++	  IRQ group number 2
++
++config SAFEG_IRQ_GROUP_3
++	hex "IRQ group 3" if (SAFEG_IRQ_GROUPS_NUMBER = 3)
++	default 0xFFFF0000
++	help
++	  IRQ group number 3
++
++config SAFEG_TASK_GROUPS
++	bool "Configure Task groups"
++	depends on SAFEG_VOL_RETURN
++	default y
++	help
++	  Enable configuration of Task groups
++
++config SAFEG_TASK_GROUPS_NUMBER
++	int "Number of Task groups"
++	depends on SAFEG_TASK_GROUPS
++	default 2
++	help
++	  Set the number of Task groups
++
++config SAFEG_TASK_GROUP_1
++	int "Task group 1 lowest priority" if (SAFEG_TASK_GROUPS_NUMBER = 1 || SAFEG_TASK_GROUPS_NUMBER = 2 || SAFEG_TASK_GROUPS_NUMBER = 3)
++	default 7
++	help
++	  Task group number 1
++
++config SAFEG_TASK_GROUP_2
++	int "Task group 2 lowest priority" if (SAFEG_TASK_GROUPS_NUMBER = 2 || SAFEG_TASK_GROUPS_NUMBER = 3)
++	default 9
++	help
++	  Task group number 2
++
++config SAFEG_TASK_GROUP_3
++	int "Task group 3 lowest priority" if (SAFEG_TASK_GROUPS_NUMBER = 3)
++	default 99
++	help
++	  Task group number 3
++
++
+--- /dev/null
++++ b/safeg/Makefile
+@@ -0,0 +1,2 @@
++obj-$(CONFIG_SAFEG) += safeg.o
++obj-$(CONFIG_SAFEG_VOL_RETURN) += safeg_latency.o
+--- /dev/null
++++ b/safeg/README
+@@ -0,0 +1,69 @@
++README
++
++This directory contains code for the voluntary return integrated scheduling
++framework.
++
++
++MAIN FILES
++
++        Kconfig
++                Configuration options and help
++
++        Makefile
++                Links the modules 'safeg.o' and 'safeg_latency.o' (if
++                voluntary return is configured) with the Linux kernel.
++                The module 'safeg.o' corresponds to one of the appli-
++                cations 'safeg-xxxx.c' that must be linked to the file
++                name 'safeg.c'
++
++        safeg_latency.[h,c]
++                Files containing the switch_hook() function to perform
++                the voluntary return through SafeG
++
++        safeg_syscalls.h
++                Definition of the function safeg_switch_to_t()
++
++EXAMPLES
++
++
++        safeg-debugfs.c
++                Simple application that just creates a boolean value in
++                the debugfs filesystem. It does not need SafeG or ASP
++                actually. It was just created as a test to use a boolean
++                value to activate/deactivate the voluntary return from
++                user space (root privileges)
++
++        safeg-rtasks.c
++                Simple application that just creates a group of periodic
++                tasks with real-time priority. In the Trust world, use
++                the 'obj_safeg_btask application'. By enabling 'DBG_VOL_RET'
++                in safeg_latency.h, it is possible to see more or less
++                that the framework is working.
++
++        safeg-shvar.c
++                Simple application that shares data with Trust world. In
++                the Trust world, use 'obj_safeg_smc_shvar'. The data is
++                shared in different ways to solve the problem of synonyms
++                in virtual caches: invalidate dcache; change to uncached;
++                invalidate cache lines; use TCM memory.
++
++BUILD
++
++        First, configure the kernel with support for SafeG and Voluntary
++        Return:
++
++        $ make ARCH=arm \
++        CROSS_COMPILE=/home/dsl/app/arm-none-eabi-2007q1-21/bin/arm-none-eabi- \
++        O=/home/dsl/kernels/linux-2.6.24-working/build/ menuconfig
++
++        Then, select the application you want to compile:
++
++        $ ln -s safeg-xxxx.c safeg.c
++
++        Alternatively, build user-space applications as in the directory
++        rt-tests of safeg repository. Finally, compile the Linux kernel:
++
++        $ make ARCH=arm \
++        CROSS_COMPILE=/home/dsl/app/arm-none-eabi-2007q1-21/bin/arm-none-eabi- \
++        O=/home/dsl/kernels/linux-2.6.24-working/build/ uImage
++
+--- /dev/null
++++ b/safeg/safeg-debugfs.c
+@@ -0,0 +1,84 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <asm/io.h>         /* for virt_to_phys */
++#include <linux/kthread.h>  /* for kthreads */
++#include <linux/delay.h>    /* for msleep */
++#include <linux/sched.h>
++#include <linux/debugfs.h>
++
++#define TASK_PRIORITY   12
++#define PERIOD_MS      1000
++
++static struct dentry *safeg_debugfs_dir, *safeg_debugfs_activate;
++static u32 safeg_vret_active = 0;
++
++static int the_task(void *arg)
++{
++	int n = 0;
++	struct sched_param schedpar;
++
++	printk(KERN_INFO "Task starts\n");
++
++	schedpar.sched_priority = TASK_PRIORITY;
++	sched_setscheduler(current, SCHED_FIFO, &schedpar);
++
++	while (1) {
++		schedule_timeout_interruptible
++			(msecs_to_jiffies(PERIOD_MS));
++		if (safeg_vret_active)
++			printk(KERN_INFO "task bool:%d (%d)\n",
++				safeg_vret_active, n++);
++	}
++
++	return 0;
++}
++
++static int __init safeg_init(void)
++{
++	printk(KERN_INFO "SAFEG driver initialization\n");
++
++	safeg_debugfs_dir = debugfs_create_dir("safeg", NULL);
++	if (!safeg_debugfs_dir)
++		goto error;
++
++	safeg_debugfs_activate =
++		debugfs_create_bool("activate_voluntary_return", 0644,
++				     safeg_debugfs_dir, &safeg_vret_active);
++	if (!safeg_debugfs_activate)
++		goto error;
++
++	kthread_run(the_task, NULL, "safeg");
++	return 0;
++
++error:
++	debugfs_remove(safeg_debugfs_dir);
++	debugfs_remove(safeg_debugfs_activate);
++	printk(KERN_INFO "ERROR in SAFEG initialization\n");
++	return -1;
++}
++
++static void __exit safeg_exit(void)
++{
++	debugfs_remove(safeg_debugfs_dir);
++	debugfs_remove(safeg_debugfs_activate);
++	printk(KERN_INFO "Goodbye SAFEG\n");
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/safeg-rtasks.c
+@@ -0,0 +1,98 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <asm/io.h>         /* for virt_to_phys */
++#include <linux/kthread.h>  /* for kthreads */
++#include <linux/delay.h>    /* for msleep */
++#include <linux/sched.h>
++#include "safeg_latency.h"
++
++#define TASK1_PRIORITY  5
++#define TASK2_PRIORITY  8
++#define TASK3_PRIORITY  12
++#define PERIOD_MS       200
++
++#define MAX_RT_TEST_THREADS	3
++
++struct test_thread_data {
++	int id;
++	int period_ms;
++	int prio;
++	struct task_struct *task;
++};
++
++static struct test_thread_data thread_data[MAX_RT_TEST_THREADS] = {
++	{.id        = 0,
++	 .period_ms = PERIOD_MS,
++	 .prio      = TASK1_PRIORITY,
++	 .task      = NULL},
++	{.id        = 1,
++	 .period_ms = PERIOD_MS,
++	 .prio      = TASK2_PRIORITY,
++	 .task      = NULL},
++	{.id        = 2,
++	 .period_ms = PERIOD_MS,
++	 .prio      = TASK3_PRIORITY,
++	 .task      = NULL}
++};
++
++static int the_task(void *arg)
++{
++	int n = 0;
++	struct test_thread_data *data = &thread_data[(int)arg];
++	struct sched_param schedpar;
++
++	printk(KERN_INFO "Task %d starts\n", data->id);
++
++	schedpar.sched_priority = data->prio;
++	sched_setscheduler(data->task, SCHED_FIFO, &schedpar);
++
++	while (1) {
++		schedule_timeout_interruptible
++			(msecs_to_jiffies(data->period_ms));
++		printk(KERN_INFO "task id:%d prio:%d count:%d\n",
++			data->id, data->prio, n++);
++	}
++
++	return 0;
++}
++
++static int __init safeg_init(void)
++{
++	int id, ret;
++
++	printk(KERN_INFO "SAFEG application starts\n");
++
++	ret = latency_initialize();
++	if (ret != 0) return -1;
++
++	for (id = 0; id < MAX_RT_TEST_THREADS; id++) {
++		thread_data[id].task =
++			kthread_run(the_task, (void *)id, "rt-%d", id);
++	}
++
++	return 0;
++}
++
++static void __exit safeg_exit(void)
++{
++	printk(KERN_INFO "Goodbye world\n");
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/safeg-shvar.c
+@@ -0,0 +1,209 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <asm/io.h>         /* for virt_to_phys */
++#include <linux/kthread.h>  /* for kthreads */
++#include <linux/delay.h>    /* for msleep */
++
++#include "safeg_syscalls.h" /* for safeg_switch_to_t */
++
++#define USE_TCM
++
++#define TCM_BASE_ADDRESS  0x70000000
++#define ITCM0_ADDRESS     TCM_BASE_ADDRESS
++#define ITCM1_ADDRESS     (TCM_BASE_ADDRESS + 0x1000)
++#define DTCM0_ADDRESS     (TCM_BASE_ADDRESS + 0x2000)
++#define DTCM1_ADDRESS     (TCM_BASE_ADDRESS + 0x3000)
++
++#ifdef USE_TCM
++int *ltask_id = (int *)DTCM0_ADDRESS;
++#else
++volatile int ltask_id = 0;
++#endif
++
++static struct task_struct *the_task_struct;
++
++/* Whole cache operations */
++#define CP15_ICACHE_INVALIDATE_ALL() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0))
++
++#define CP15_DCACHE_INVALIDATE_ALL() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c6, 0":: "r"(0))
++
++#define CP15_CACHE_INVALIDATE_BOTH() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c7, 0":: "r"(0))
++
++#define CP15_DCACHE_CLEAN() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c10, 0":: "r"(0))
++
++#define CP15_DCACHE_INVALIDATE_CLEAN() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c14, 0":: "r"(0))
++
++/* Cache line Set/Index operations */
++
++#define CP15_ICACHE_LINE_INDEX_INVALIDATE(x) \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 2"::"r"(x))
++
++#define CP15_DCACHE_LINE_INDEX_INVALIDATE(x) \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c6, 2"::"r"(x))
++
++#define CP15_DCACHE_LINE_INDEX_CLEAN(x) \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c10, 2"::"r"(x))
++
++#define CP15_DCACHE_LINE_INDEX_INVALIDATE_CLEAN(x) \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c14, 2"::"r"(x))
++
++/* Data barrier to make sure all operations are finished */
++#define CP15_DATASYNC_BARRIER() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c10, 4":: "r"(0))
++
++static int the_task(void *arg)
++{
++	int n=0;
++#ifndef USE_TCM
++	unsigned int way, line, index;
++	unsigned long phy_add;
++	void *virt_add;
++
++	virt_add = (void *)&ltask_id;
++	phy_add  = virt_to_phys(virt_add);
++#endif
++	printk(KERN_INFO "NT Task starts\n");
++
++	while (1) {
++		schedule_timeout_interruptible(msecs_to_jiffies(1000));
++		safeg_switch_to_t(T_SMC_SWITCH_RET, 0);
++
++
++		/* Solution 1: clean invalidate all D-Cache */
++// 		CP15_DCACHE_INVALIDATE_CLEAN();
++
++		/* Solution 1b: equivalent but line by line */
++// 		for (way=0; way<4; way++) {
++// 			for (line=0; line<256; line++) {
++// 				index = (line << 5) | (way << 30);
++// 				CP15_DCACHE_LINE_INDEX_INVALIDATE_CLEAN(index);
++// 			}
++// 		}
++
++		/* Solution 2: clean invalidate the adecuate entries */
++// 		for (way=0; way<4; way++) {
++// 			index = (phy_add & 0x1FE0) | (way << 30);
++// 			CP15_DCACHE_LINE_INDEX_CLEAN(index);
++// 			CP15_DATASYNC_BARRIER();
++// 			index = ((unsigned int)virt_add & 0x1FE0) | (way << 30);
++// 			CP15_DCACHE_LINE_INDEX_INVALIDATE(index);
++// 		}
++
++		/* Solution 3: set arch/arm/mmu.c to non-cachable (nothing) */
++		/* Solution 4: use the TCM (nothing necessary) */
++
++#ifdef USE_TCM
++		printk(KERN_INFO "ltask_id: %d (%d?)\n", *ltask_id, n++);
++#else
++		printk(KERN_INFO "ltask_id: %d (%d?)\n", ltask_id, n++);
++#endif
++	}
++
++	return 0;
++}
++
++#define CP15_VA_TO_PA_READ(x) \
++    __asm__ volatile ("mrc p15, 0, %0, c7, c4, 0":"=r"(x))
++
++#define CP15_VA_TO_PA_WRITE(x, perm)  \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c8, %1"::"r"(x),"I"(perm))
++
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/stddef.h>
++#include <linux/ioport.h>
++#include <linux/genalloc.h>
++#include <linux/string.h> /* memcpy */
++#include <asm/page.h> /* PAGE_SHIFT */
++#include <asm/mach/map.h>
++
++static struct resource dtcm_res = {
++        .name = "DTCM RAM",
++        .start = DTCM0_ADDRESS,
++        .end = (DTCM0_ADDRESS + 0x1000 - 1),
++        .flags = IORESOURCE_MEM
++};
++
++static struct map_desc dtcm_iomap[] __initdata = {
++        {
++                .virtual        = DTCM0_ADDRESS,
++                .pfn            = __phys_to_pfn(DTCM0_ADDRESS),
++                .length         = (0x1000),
++                .type           = MT_MEMORY
++        }
++};
++
++static int __init safeg_init(void)
++{
++#ifdef USE_TCM
++	request_resource(&iomem_resource, &dtcm_res);
++	iotable_init(dtcm_iomap, 1);
++
++	safeg_switch_to_t(T_SMC_SWITCH_SHVAR, (int)DTCM0_ADDRESS);
++#else
++	unsigned long phy_add;
++	void *virt_add;
++
++	virt_add = (void *)&ltask_id;
++
++	CP15_VA_TO_PA_WRITE(virt_add, 1);
++	CP15_VA_TO_PA_READ(phy_add);
++
++	phy_add = ((unsigned int)phy_add & 0xFFFFFC00);
++	phy_add = ((unsigned int)phy_add | ((unsigned int)virt_add & 0x3FF));
++
++	printk(KERN_INFO "By CP15, virt:%p phy:%p\n",
++		virt_add, (void *)phy_add);
++
++	virt_add = (void *)&ltask_id;
++	phy_add  = virt_to_phys(virt_add);
++
++	printk(KERN_INFO "By Linux, virt:%p phy:%p\n",
++		virt_add, (void *)phy_add);
++	safeg_switch_to_t(T_SMC_SWITCH_SHVAR, (int)phy_add);
++#endif
++	the_task_struct = kthread_run(the_task, NULL, "nt-task");
++
++	return 0;
++}
++
++static void __exit safeg_exit(void)
++{
++	printk(KERN_INFO "Goodbye world\n");
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/safeg_latency.c
+@@ -0,0 +1,91 @@
++#include "safeg_latency.h"
++#include "safeg_syscalls.h"
++#include <linux/sched.h>
++#include <linux/debugfs.h>
++
++int shared_current_nt_prio;  /* current nt running priority (can be irq) */
++int shared_ltask_idx;        /* current ltask index (for vol return) */
++
++/*
++ * |-32..LTASK1..5|6..LTASK2..11|12..BTASK..max|
++ */
++int ltask_lowest_nt_prio[NUM_LTASKS] = {
++	LTASK1_NT_LW_PRIORITY,
++	LTASK2_NT_LW_PRIORITY
++};
++
++static int find_ltask_idx(int current_nt_prio)
++{
++	int idx;
++
++	for(idx = 0; idx < NUM_LTASKS; idx++) {
++		/* we assume less value means higher priority */
++		if (current_nt_prio <= ltask_lowest_nt_prio[idx])
++			break;
++	};
++	return idx; /* BTASK idx is NUM_LTASKS */
++};
++
++static struct dentry *safeg_debugfs_dir, *safeg_debugfs_activate;
++static u32 safeg_vret_active = 0;
++
++void latency_voluntary_return(int current_nt_prio)
++{
++	int  ltask_idx;
++
++	/* TODO: check the case when IRQ preempts another IRQ */
++
++	shared_current_nt_prio = current_nt_prio;
++	ltask_idx = find_ltask_idx(current_nt_prio);
++
++	if (ltask_idx != shared_ltask_idx) {
++		/* voluntary return (TODO: race condition?) */
++		DEBUG(DBG_VOL_RET,
++		        "RET running under %s%d but prio:%d (%s%d)\n",
++			(shared_ltask_idx == NUM_LTASKS) ? "BTASK" : "LTASK",
++			(shared_ltask_idx == NUM_LTASKS) ? 0 : (shared_ltask_idx + 1),
++			current_nt_prio,
++			(ltask_idx == NUM_LTASKS) ? "BTASK" : "LTASK",
++			(ltask_idx == NUM_LTASKS) ? 0 : (ltask_idx + 1));
++		safeg_switch_to_t(T_SMC_SWITCH_HANDLER, 0);
++	}
++}
++
++void switch_hook(struct task_struct *next)
++{
++	if (!safeg_vret_active) return;
++
++	if (next->prio < 100)
++		latency_voluntary_return(next->rt_priority);
++}
++
++int latency_initialize()
++{
++	shared_current_nt_prio = INIT_PRIORITY;
++
++	DEBUG(DBG_LAT_ADR, "Shared Variables: &latex_idx=%p &nt_prio=%p",
++		&shared_ltask_idx, &shared_current_nt_prio);
++
++	safeg_switch_to_t(T_SMC_SWITCH_SHVAR,
++			  virt_to_phys(&shared_ltask_idx));
++
++	safeg_switch_to_t(T_SMC_SWITCH_SHVAR,
++			  virt_to_phys(&shared_current_nt_prio));
++
++	safeg_debugfs_dir = debugfs_create_dir("safeg", NULL);
++	if (!safeg_debugfs_dir)
++		goto error;
++
++	safeg_debugfs_activate =
++		debugfs_create_bool("activate_voluntary_return", 0644,
++				     safeg_debugfs_dir, &safeg_vret_active);
++	if (!safeg_debugfs_activate)
++		goto error;
++
++	return 0;
++error:
++	debugfs_remove(safeg_debugfs_dir);
++	debugfs_remove(safeg_debugfs_activate);
++	printk(KERN_INFO "ERROR in Latency module initialization\n");
++	return -1;
++}
+--- /dev/null
++++ b/safeg/safeg_latency.h
+@@ -0,0 +1,20 @@
++#ifndef __SAFEG_LATENCY_H__
++#define __SAFEG_LATENCY_H__
++
++#define INIT_PRIORITY 99
++
++#define LTASK1_NT_LW_PRIORITY	CONFIG_SAFEG_TASK_GROUP_1  // 5
++#define LTASK2_NT_LW_PRIORITY	CONFIG_SAFEG_TASK_GROUP_2  // 11
++#define NUM_LTASKS	CONFIG_SAFEG_TASK_GROUPS_NUMBER // 2
++
++#ifndef DEBUG
++#define DEBUG(enable,x,args...)  \
++	if(enable) printk(KERN_INFO "%s: " x, __func__ , ##args)
++#endif /* DEBUG */
++
++#define DBG_LAT_ADR true
++#define DBG_VOL_RET true
++
++extern int latency_initialize(void);
++
++#endif /* __SAFEG_LATENCY_H__ */
+--- /dev/null
++++ b/safeg/safeg_syscalls.h
+@@ -0,0 +1,56 @@
++#ifndef _SAFEG_SYSCALLS_H_
++#define _SAFEG_SYSCALLS_H_
++
++/*
++ * SAFEG System Monitor Calls
++ *
++ * T_: Trust calls
++ * NT_: Non-Trust calls
++ *
++ * template: safeg_syscall(int num, int *arg0, int *arg1)
++ *
++ * indentation:
++ *      num
++ *          arg0
++ *              arg1
++ */
++#define T_SMC_SWITCH  0 /* switch to NT */
++#define     T_SMC_SWITCH_OK      0 /* no error */
++#define     T_SMC_SWITCH_ERR     1 /* error, return to T */
++#define     T_SMC_SWITCH_HANDLER 2 /* NT returns, raise safeg handler*/
++#define     T_SMC_SWITCH_RET     3 /* NT returns */
++#define     T_SMC_SWITCH_SHVAR   4 /* NT returns, arg1 = shared variable */
++
++#define T_SMC_REBOOT  1 /* reboot NT */
++#define     T_SMC_REBOOT_OK      0 /* no error */
++#define     T_SMC_REBOOT_ERR     1 /* error, return to T */
++
++#define NT_SMC_SWITCH 0 /* switch to T */
++#define     NT_SMC_SWITCH_OK     0 /* no error */
++#define     NT_SMC_SWITCH_ERR    1 /* error, return to NT */
++
++#define NT_SMC_INV_CACHE 1 /* invalidate cache and return to NT */
++#define     NT_SMC_INV_CACHE_OK   0 /* no error */
++#define     NT_SMC_INV_CACHE_ERR  1 /* error, return to T */
++#define     NT_SMC_INV_CACHE_D    2 /* invalidate data cache */
++#define     NT_SMC_INV_CACHE_I    3 /* invalidate instruction cache */
++#define     NT_SMC_INV_CACHE_ALL  4 /* invalidate both caches */
++
++#define Asm __asm__ volatile
++
++#ifndef __ASSEMBLY__
++
++static void safeg_switch_to_t(int arg0, int arg1)
++{
++    Asm("mov r0, %0\n\t"
++        "mov r1, %1\n\t"
++        "mov r2, %2\n\t"
++        "smc 0\n\t"
++        : /* no output */
++        : "I" (NT_SMC_SWITCH), "r" (arg0), "r" (arg1)
++        : "r0", "r1", "r2", "memory");
++}
++
++#endif /* __ASSEMBLY__ */
++
++#endif /* _SAFEG_SYSCALLS_H_ */

@@ -1,0 +1,607 @@
+---
+ Makefile                       |    2 
+ arch/arm/common/gic.c          |    7 +
+ arch/arm/mach-realview/Kconfig |    2 
+ arch/arm/mach-realview/core.c  |   86 ++++++++++++
+ include/linux/sched.h          |    4 
+ safeg/Kconfig                  |   19 ++
+ safeg/Makefile                 |    2 
+ safeg/dualoscom.c              |  281 +++++++++++++++++++++++++++++++++++++++++
+ safeg/integrated_scheduling.c  |  115 ++++++++++++++++
+ safeg/integrated_scheduling.h  |    6 
+ 10 files changed, 523 insertions(+), 1 deletion(-)
+
+--- a/Makefile
++++ b/Makefile
+@@ -650,7 +650,7 @@ export mod_strip_cmd
+ 
+ 
+ ifeq ($(KBUILD_EXTMOD),)
+-core-y		+= kernel/ mm/ fs/ ipc/ security/ crypto/ block/
++core-y		+= kernel/ mm/ fs/ ipc/ security/ crypto/ block/ safeg/
+ 
+ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
+ 		     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
+--- a/arch/arm/common/gic.c
++++ b/arch/arm/common/gic.c
+@@ -254,6 +254,13 @@ void __cpuinit gic_cpu_init(unsigned int
+ 	writel(1, base + GIC_CPU_CTRL);
+ }
+ 
++void safeg_gic_raise_softirq(void)
++{
++	writel(2, gic_data[0].dist_base + GIC_DIST_PENDING_SET + 4);
++}
++
++EXPORT_SYMBOLS(safeg_gic_raise_softirq);
++
+ #ifdef CONFIG_SMP
+ void gic_raise_softirq(const struct cpumask *mask, unsigned int irq)
+ {
+--- a/arch/arm/mach-realview/Kconfig
++++ b/arch/arm/mach-realview/Kconfig
+@@ -1,6 +1,8 @@
+ menu "RealView platform type"
+ 	depends on ARCH_REALVIEW
+ 
++source "safeg/Kconfig"
++
+ config MACH_REALVIEW_EB
+ 	bool "Support RealView/EB platform"
+ 	select ARM_GIC
+--- a/arch/arm/mach-realview/core.c
++++ b/arch/arm/mach-realview/core.c
+@@ -722,9 +722,78 @@ static void __init realview_clockevents_
+ 	clockevents_register_device(&timer0_clockevent);
+ }
+ 
++/* set in safeg_measures.h LINUX_MEASURE_TIMER_LAT to 1
++ * Note: comment out when no measurements are needed
++ */
++// #define LINUX_MEASURE_TIMER_LAT
++
++#ifdef LINUX_MEASURE_TIMER_LAT
++
++/*
++ * Virtual File (cat /proc/safeg_hist)
++ * NOTE: copied from kernel/sched_debug.c
++ */
++
++#include <linux/seq_file.h>
++#include <linux/proc_fs.h>
++
++#define NUM_HIST_SAMPLES 2000
++static unsigned int hist[NUM_HIST_SAMPLES];
++
++static int safeg_debug_show(struct seq_file *m, void *v)
++{
++	int i;
++
++	seq_printf(m, "index cycles\n");
++	for (i = 0; i < NUM_HIST_SAMPLES; i++) {
++		seq_printf(m, "%05d %05u\n", i, hist[i]);
++	}
++
++	return 0;
++}
++
++static int safeg_debug_open(struct inode *inode, struct file *filp)
++{
++	return single_open(filp, safeg_debug_show, NULL);
++}
++
++static const struct file_operations safeg_debug_fops = {
++	.open           = safeg_debug_open,
++	.read           = seq_read,
++	.llseek         = seq_lseek,
++	.release        = single_release,
++};
++
++static int __init init_safeg_hist_procfs(void)
++{
++	struct proc_dir_entry *pe;
++
++	pe = proc_create("safeg_hist", 0444, NULL, &safeg_debug_fops);
++	if (!pe)
++		return -ENOMEM;
++	return 0;
++}
++
++__initcall(init_safeg_hist_procfs);
++
++#define Asm	__asm__ volatile
++#define CP15_PM_CONTROL_WRITE(x) Asm("mcr p15, 0, %0, c15, c12, 0"::"r"(x))
++#define CP15_PM_CYCLE_READ(x) Asm("mrc p15, 0, %0, c15, c12, 1":"=r"(x))
++#define CP15_PM_CYCLE_WRITE(x) Asm("mcr p15, 0, %0, c15, c12, 1"::"r"(x))
++#define CP15_DCACHE_CLEAN_AND_INVALIDATE() \
++	__asm__ volatile ("mcr p15, 0, %0, c7, c14, 0":: "r"(0))
++
++static volatile uint32_t result;
++#endif /* LINUX_MEASURE_TIMER_LAT */
++
+ /*
+  * IRQ handler for the timer
+  */
++
++#ifdef LINUX_MEASURE_TIMER_LAT
++static u64 count = 0;
++#endif
++
+ static irqreturn_t realview_timer_interrupt(int irq, void *dev_id)
+ {
+ 	struct clock_event_device *evt = &timer0_clockevent;
+@@ -734,6 +803,23 @@ static irqreturn_t realview_timer_interr
+ 
+ 	evt->event_handler(evt);
+ 
++#ifdef LINUX_MEASURE_TIMER_LAT
++	CP15_PM_CYCLE_READ(result);
++
++	count++;
++	if (count == 100000UL) {
++		printk(KERN_INFO "DONE\n");
++		return IRQ_HANDLED;
++	} else if (count > 100000UL)
++		return IRQ_HANDLED;
++
++	result = result/210;
++	if (result >= NUM_HIST_SAMPLES)
++		hist[NUM_HIST_SAMPLES-1]++;
++	else
++		hist[result]++;
++#endif
++
+ 	return IRQ_HANDLED;
+ }
+ 
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -2475,6 +2475,10 @@ extern void recalc_sigpending(void);
+ 
+ extern void signal_wake_up(struct task_struct *t, int resume_stopped);
+ 
++#ifdef CONFIG_SAFEG_INTEGRATED_SCHEDULING
++extern void switch_hook(int next_prio);
++#endif /* CONFIG_SAFEG_INTEGRATED_SCHEDULING */
++
+ /*
+  * Wrappers for p->thread_info->cpu access. No-op on UP.
+  */
+--- /dev/null
++++ b/safeg/Kconfig
+@@ -0,0 +1,19 @@
++config SAFEG
++	bool "Enable SafeG extensions"
++	default y
++	help
++	  Enables SafeG extensions to the Linux kernel.
++
++config SAFEG_INTEGRATED_SCHEDULING
++	bool "Integrated scheduling"
++	depends on SAFEG
++	default n
++	help
++	  Enable SafeG integrated scheduling framework.
++
++config SAFEG_DUALOSCOM
++	bool "Inter-OS communications"
++	depends on SAFEG
++	default n
++	help
++	  Enable SafeG inter-OS communications framework.
+--- /dev/null
++++ b/safeg/Makefile
+@@ -0,0 +1,2 @@
++obj-$(CONFIG_SAFEG_INTEGRATED_SCHEDULING) += integrated_scheduling.o
++obj-$(CONFIG_SAFEG_DUALOSCOM) += dualoscom.o
+--- /dev/null
++++ b/safeg/dualoscom.c
+@@ -0,0 +1,281 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <asm/io.h>         /* for virt_to_phys, ioremap */
++// #include <linux/io.h>
++#include <linux/semaphore.h>
++#include <linux/wait.h>
++#include <linux/sched.h>
++#include <linux/interrupt.h>   /* for request_irq */
++#include <linux/fs.h>       /* for alloc_chrdev_region */
++#include <linux/cdev.h>     /* for cdev_alloc */
++#include <linux/dma-mapping.h> /* for dma_alloc_coherent */
++#include "../../safeg/safeg/nt_safeg_syscalls.h"
++
++#define DBG_INIT true
++#define DBG_CALLS false
++
++#ifndef DEBUG
++#define DEBUG(enable,x,args...)  \
++    if(enable) printk(KERN_INFO "" x, ##args)
++#endif /* DEBUG */
++
++#define SHM_PHYS_ADDRESS    0x4000000UL /* 64MB */
++#define SHM_SIZE            0x100000UL /* 1MB */
++
++#define DUALOSCOM_NUM_CHANNELS             2
++#define DUALOSCOM_CHANNEL_0                0
++#define DUALOSCOM_CHANNEL_1                1
++
++#define DUALOSCOM_NUM_BLOCKS               {10,5}
++#define DUALOSCOM_BLOCK_SIZES              {32,8} // must be multiple of 4 (alignment)
++#define DUALOSCOM_RTOS_PROTECTED           {false,false}
++#define DUALOSCOM_GPOS_PROTECTED           {false,false}
++
++// channel size = 24  <-- write cursor, read cursor, filter_id x 2
++//                + 2 * 4 * (num_blocks + 1) <-- 2 x FIFO queues
++//                + num_blocks * (block_size + 4) <--- blocks with lock
++#define DUALOSCOM_SHMEM_OFFSETS            {0,472} // TODO: cache-align offsets
++#define DUALOSCOM_SHMEM_PENDING_EVENTS     604
++#define DUALOSCOM_SHMEM_SIZE               620     // DUALOSCOM_SHMEM_PENDING_EVENTS + 8*num_channels
++
++#define DUALOSCOM_NUM_GROUPS               3
++#define DUALOSCOM_CHANNEL2GROUPS           {{true,true,false},{true,false,true}}
++#define DUALOSCOM_GROUP_0                  0
++#define DUALOSCOM_GROUP_1                  1
++#define DUALOSCOM_GROUP_2                  2
++
++#include <linux/ioctl.h>
++
++// 'j' 00-3F   linux/joystick.h
++#define DUALOSCOM_IOCTL_CMD_INIT           _IO('j', 0x40)
++#define DUALOSCOM_IOCTL_CMD_SENDEVENT      _IOW('j', 0x41, int)
++#define DUALOSCOM_IOCTL_CMD_WAITEVENT      _IOW('j', 0x42, int)
++#define DUALOSCOM_IOCTL_CMD_WAITGROUP      _IOWR('j', 0x43, int)
++
++/*
++ * INTERNAL TYPES
++ */
++typedef struct {
++    wait_queue_head_t gpos_channel_wq;
++    uint32_t *rtos2gpos_pending;
++    uint32_t *gpos2rtos_pending;
++    bool             groups[DUALOSCOM_NUM_GROUPS];
++} dualoscom_channel_event_t;
++
++typedef struct {
++    wait_queue_head_t gpos_group_wq;
++} dualoscom_group_event_t;
++
++typedef struct {
++    dualoscom_channel_event_t channel_events[DUALOSCOM_NUM_CHANNELS];
++    dualoscom_group_event_t group_events[DUALOSCOM_NUM_GROUPS];
++} dualoscom_kernel_t;
++
++/*
++ * MODULE VARIABLES
++ */
++static int major;
++static struct cdev safeg_cdev;
++static void *shmem;
++static dualoscom_kernel_t the_dualoscom_kernel;
++
++/*
++ * OPEN
++ */
++static int safeg_open(struct inode *inode, struct file *filp)
++{
++    DEBUG(DBG_CALLS, "OPEN called\n");
++    return 0;
++}
++
++/*
++ * MMAP
++ */
++static int safeg_mmap(struct file *filp, struct vm_area_struct *vma)
++{
++    DEBUG(DBG_CALLS, "MMAP called\n");
++
++    if ((vma->vm_end - vma->vm_start) > SHM_SIZE) return -EAGAIN;
++
++    vma->vm_page_prot = pgprot_dmacoherent(vma->vm_page_prot); //pgprot_noncached possible too
++
++    if (remap_pfn_range(vma,
++                        vma->vm_start,
++                        SHM_PHYS_ADDRESS >> PAGE_SHIFT,
++                        vma->vm_end - vma->vm_start,
++                        vma->vm_page_prot))
++        return -EAGAIN;
++
++    return 0;
++}
++
++/*
++ * IOCTLs
++ */
++static int dualoscom_ioctl_init(void)
++{
++    int i, j;
++    dualoscom_channel_event_t *chevent;
++    dualoscom_group_event_t *grevent;
++    bool groups[DUALOSCOM_NUM_CHANNELS][DUALOSCOM_NUM_GROUPS] =
++        DUALOSCOM_CHANNEL2GROUPS;
++
++    // 1.- initialize channel events
++    for(i=0; i<DUALOSCOM_NUM_CHANNELS; i++) {
++        chevent = &the_dualoscom_kernel.channel_events[i];
++        init_waitqueue_head(&chevent->gpos_channel_wq);
++        chevent->rtos2gpos_pending = shmem + DUALOSCOM_SHMEM_PENDING_EVENTS + i*4;
++        chevent->gpos2rtos_pending = chevent->rtos2gpos_pending + DUALOSCOM_NUM_CHANNELS*4;
++
++        for(j=0; j<DUALOSCOM_NUM_GROUPS; j++) {
++            chevent->groups[j] = groups[i][j];
++        }
++    }
++
++    // 2.- initialize group events
++    for(i=0; i<DUALOSCOM_NUM_GROUPS; i++) {
++        grevent = &the_dualoscom_kernel.group_events[i];
++        init_waitqueue_head(&grevent->gpos_group_wq);
++    }
++
++    // 3.- send a signal to the rtos
++    safeg_raise_softfiq();
++
++    return 0;
++}
++
++static int dualoscom_ioctl_sendevent(uint32_t channel_id)
++{
++    dualoscom_channel_event_t *chevent;
++
++    if (channel_id >= DUALOSCOM_NUM_CHANNELS) return -1;
++
++    chevent = &the_dualoscom_kernel.channel_events[channel_id];
++
++    *(chevent->gpos2rtos_pending) = 1;
++
++    safeg_raise_softfiq();
++
++    return 0;
++}
++
++static int dualoscom_ioctl_waitevent(uint32_t channel_id)
++{
++    dualoscom_channel_event_t *chevent;
++
++    if (channel_id >= DUALOSCOM_NUM_CHANNELS) return -1;
++
++    chevent = &the_dualoscom_kernel.channel_events[channel_id];
++
++    wait_event_interruptible(chevent->gpos_channel_wq,
++                             *(chevent->rtos2gpos_pending) != 0);
++
++    *(chevent->rtos2gpos_pending) = 0;
++
++    return 0;
++}
++
++static int safeg_ioctl(struct inode *inode, struct file *filp,
++                       unsigned int cmd, unsigned long arg)
++{
++    DEBUG(DBG_CALLS, "IOCTL called (cmd:%u, arg:%lu)\n", cmd, arg);
++
++    switch(cmd) {
++        case DUALOSCOM_IOCTL_CMD_INIT:
++            DEBUG(DBG_CALLS, "DUALOSCOM_IOCTL_CMD_INIT(%u)\n", cmd);
++            return dualoscom_ioctl_init();
++            break;
++        case DUALOSCOM_IOCTL_CMD_SENDEVENT:
++            DEBUG(DBG_CALLS, "DUALOSCOM_IOCTL_CMD_SENDEVENT(%u)\n", cmd);
++            return dualoscom_ioctl_sendevent((uint32_t)arg);
++            break;
++        case DUALOSCOM_IOCTL_CMD_WAITEVENT:
++            DEBUG(DBG_CALLS, "DUALOSCOM_IOCTL_CMD_WAITEVENT(cmd:%u arg:%lu)\n", cmd, arg);
++            return dualoscom_ioctl_waitevent((uint32_t)arg);
++            break;
++        default:
++            DEBUG(DBG_CALLS, "IOCTL cmd (%u): not available\n", cmd);
++            return -ENOTTY;
++    }
++}
++
++static struct file_operations safeg_fops = {
++    .owner   = THIS_MODULE,
++    .open    = safeg_open,
++    .mmap    = safeg_mmap,
++    .ioctl   = safeg_ioctl,
++};
++
++static irqreturn_t safeg_dualoscom_irq_handler(int irq, void *dev_id)
++{
++    int i;
++    dualoscom_channel_event_t *chevent;
++
++    DEBUG(DBG_CALLS, "SafeG IRQ handler\n");
++
++    for(i=0; i<DUALOSCOM_NUM_CHANNELS; i++) {
++        chevent = &the_dualoscom_kernel.channel_events[i];
++        if (*(chevent->rtos2gpos_pending) == 0) continue;
++        wake_up_interruptible(&chevent->gpos_channel_wq);
++    }
++
++    return IRQ_HANDLED;
++}
++
++static int __init safeg_init(void)
++{
++    int err;
++    dev_t dev;
++
++    DEBUG(DBG_INIT, "SafeG allocate shared memory\n");
++    shmem = ioremap_nocache(SHM_PHYS_ADDRESS, SHM_SIZE);
++
++    DEBUG(DBG_INIT, "Allocating SafeG major/minor\n");
++    err = alloc_chrdev_region(&dev, 0, 1,"safeg");
++    major = MAJOR(dev);
++
++    DEBUG(DBG_INIT, "mknod /dev/safeg c %d 0 (/proc/devices)\n", major);
++    DEBUG(DBG_INIT, "chmod 0664 /dev/safeg\n");
++
++    DEBUG(DBG_INIT, "Register SafeG char device\n");
++    cdev_init(&safeg_cdev, &safeg_fops);
++    safeg_cdev.owner = THIS_MODULE;
++    err = cdev_add (&safeg_cdev, dev, 1);
++    if (err) goto init_error;
++
++    DEBUG(DBG_INIT, "Request interrupt\n");
++    err = request_irq(33, safeg_dualoscom_irq_handler, 0, "safeg-dualoscom", NULL);
++    if (err) goto init_error;
++
++    return 0;
++
++init_error:
++    DEBUG(DBG_INIT, "Error %d at initialization", err);
++    return err;
++}
++
++static void __exit safeg_exit(void)
++{
++    DEBUG(DBG_INIT, "Goodbye SAFEG\n");
++    cdev_del(&safeg_cdev);
++    unregister_chrdev_region(MKDEV(major, 0), 1);
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG dualoscom driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/integrated_scheduling.c
+@@ -0,0 +1,115 @@
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <linux/dma-mapping.h>
++#include <linux/debugfs.h>
++#include <linux/seq_file.h>
++#include <linux/proc_fs.h>
++
++#define Asm	__asm__ volatile
++
++#include "integrated_scheduling.h"
++#include "../../safeg/safeg/nt_safeg_syscalls.h"
++
++/*
++ * Global variables
++ */
++static volatile u32 safeg_vret_active = false;
++
++/*
++ * Shared variables (check mmu.c settings)
++ */
++struct shared_vars_t {
++	int      nt_prio; // nt priority (-32..140)
++	uint32_t ltask;   // current ltask (0..NUM_LTASKS)
++};
++
++volatile struct shared_vars_t *shvars = NULL;
++EXPORT_SYMBOL(shvars);
++
++/*
++ * LTASK management data
++ */
++#define NUM_LTASKS          2
++#define NUM_PRI             12
++uint32_t ntprio_to_ltask[NUM_PRI] = {0,0,0,0,0,0,1,1,1,1,1,1};
++
++/*
++ * Voluntary return hook
++ */
++
++static dma_addr_t pa;
++static bool first_time = true;
++
++void switch_hook(int next_prio)
++{
++	uint32_t next_ltask;
++
++	if (!safeg_vret_active) return;
++
++	if (first_time) {
++		first_time = false;
++		safeg_switch_to_t(T_SMC_SWITCH_SHVAR, (int)pa);
++		return;
++	}
++
++	shvars->nt_prio = next_prio;
++
++	if (shvars->nt_prio >= NUM_PRI)
++		next_ltask = NUM_LTASKS;
++	else
++		next_ltask = ntprio_to_ltask[shvars->nt_prio];
++
++	if (shvars->ltask != next_ltask) {
++		safeg_raise_softfiq();
++	}
++}
++
++/*
++ * Initialization
++ */
++
++int latency_initialize()
++{
++	void *va;
++	struct dentry *dir, *act;
++
++	// allocate cache coherent memory for the shared variables
++	va = dma_alloc_coherent(NULL, sizeof(struct shared_vars_t), &pa, GFP_KERNEL);
++	if (!va) {
++		printk(KERN_INFO "SAFEG: unable to allocate memory\n");
++		return -ENOMEM;
++	}
++	shvars = (struct shared_vars_t *)va;
++
++    // init shared variables
++	shvars->nt_prio  = NUM_PRI;
++	shvars->ltask    = NUM_LTASKS;
++
++	// create debugfs directory with activate boolean
++	dir = debugfs_create_dir("safeg", NULL);
++	act = debugfs_create_bool("activate_voluntary_return", 0644,
++							  dir, (u32 *)&safeg_vret_active);
++
++	return 0;
++}
++
++
++
++static int __init safeg_init(void)
++{
++    printk(KERN_INFO "SafeG integrated scheduling module loaded\n");
++    return latency_initialize();
++}
++
++static void __exit safeg_exit(void)
++{
++    printk(KERN_INFO "SafeG integrated scheduling module exits\n");
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/integrated_scheduling.h
+@@ -0,0 +1,6 @@
++#ifndef __SAFEG_LATENCY_H__
++#define __SAFEG_LATENCY_H__
++
++extern int latency_initialize(void);
++
++#endif /* __SAFEG_LATENCY_H__ */

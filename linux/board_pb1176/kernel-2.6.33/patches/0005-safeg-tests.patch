@@ -1,0 +1,1360 @@
+---
+ arch/arm/mach-realview/core.c |   86 ++++++++++++
+ safeg/README                  |   69 +++++++++
+ safeg/safeg-debugfs.c         |   84 +++++++++++
+ safeg/safeg-mmap.c            |  125 +++++++++++++++++
+ safeg/safeg-mqueue.c          |  124 +++++++++++++++++
+ safeg/safeg-panic.c           |   76 ++++++++++
+ safeg/safeg-ring.c            |  300 ++++++++++++++++++++++++++++++++++++++++++
+ safeg/safeg-rtasks.c          |  193 +++++++++++++++++++++++++++
+ safeg/safeg-rtasks2.c         |   34 ++++
+ safeg/safeg-shvar.c           |  210 +++++++++++++++++++++++++++++
+ 10 files changed, 1301 insertions(+)
+
+--- a/arch/arm/mach-realview/core.c
++++ b/arch/arm/mach-realview/core.c
+@@ -722,9 +722,78 @@ static void __init realview_clockevents_
+ 	clockevents_register_device(&timer0_clockevent);
+ }
+ 
++/* set in safeg_measures.h LINUX_MEASURE_TIMER_LAT to 1
++ * Note: comment out when no measurements are needed
++ */
++// #define LINUX_MEASURE_TIMER_LAT
++
++#ifdef LINUX_MEASURE_TIMER_LAT
++
++/*
++ * Virtual File (cat /proc/safeg_hist)
++ * NOTE: copied from kernel/sched_debug.c
++ */
++
++#include <linux/seq_file.h>
++#include <linux/proc_fs.h>
++
++#define NUM_HIST_SAMPLES 2000
++static unsigned int hist[NUM_HIST_SAMPLES];
++
++static int safeg_debug_show(struct seq_file *m, void *v)
++{
++	int i;
++
++	seq_printf(m, "index cycles\n");
++	for (i = 0; i < NUM_HIST_SAMPLES; i++) {
++		seq_printf(m, "%05d %05u\n", i, hist[i]);
++	}
++
++	return 0;
++}
++
++static int safeg_debug_open(struct inode *inode, struct file *filp)
++{
++	return single_open(filp, safeg_debug_show, NULL);
++}
++
++static const struct file_operations safeg_debug_fops = {
++	.open           = safeg_debug_open,
++	.read           = seq_read,
++	.llseek         = seq_lseek,
++	.release        = single_release,
++};
++
++static int __init init_safeg_hist_procfs(void)
++{
++	struct proc_dir_entry *pe;
++
++	pe = proc_create("safeg_hist", 0444, NULL, &safeg_debug_fops);
++	if (!pe)
++		return -ENOMEM;
++	return 0;
++}
++
++__initcall(init_safeg_hist_procfs);
++
++#define Asm	__asm__ volatile
++#define CP15_PM_CONTROL_WRITE(x) Asm("mcr p15, 0, %0, c15, c12, 0"::"r"(x))
++#define CP15_PM_CYCLE_READ(x) Asm("mrc p15, 0, %0, c15, c12, 1":"=r"(x))
++#define CP15_PM_CYCLE_WRITE(x) Asm("mcr p15, 0, %0, c15, c12, 1"::"r"(x))
++#define CP15_DCACHE_CLEAN_AND_INVALIDATE() \
++	__asm__ volatile ("mcr p15, 0, %0, c7, c14, 0":: "r"(0))
++
++static volatile uint32_t result;
++#endif /* LINUX_MEASURE_TIMER_LAT */
++
+ /*
+  * IRQ handler for the timer
+  */
++
++#ifdef LINUX_MEASURE_TIMER_LAT
++static u64 count = 0;
++#endif
++
+ static irqreturn_t realview_timer_interrupt(int irq, void *dev_id)
+ {
+ 	struct clock_event_device *evt = &timer0_clockevent;
+@@ -734,6 +803,23 @@ static irqreturn_t realview_timer_interr
+ 
+ 	evt->event_handler(evt);
+ 
++#ifdef LINUX_MEASURE_TIMER_LAT
++	CP15_PM_CYCLE_READ(result);
++
++	count++;
++	if (count == 100000UL) {
++		printk(KERN_INFO "DONE\n");
++		return IRQ_HANDLED;
++	} else if (count > 100000UL)
++		return IRQ_HANDLED;
++
++	result = result/210;
++	if (result >= NUM_HIST_SAMPLES)
++		hist[NUM_HIST_SAMPLES-1]++;
++	else
++		hist[result]++;
++#endif
++
+ 	return IRQ_HANDLED;
+ }
+ 
+--- /dev/null
++++ b/safeg/README
+@@ -0,0 +1,69 @@
++README
++
++This directory contains code for the voluntary return integrated scheduling
++framework.
++
++
++MAIN FILES
++
++        Kconfig
++                Configuration options and help
++
++        Makefile
++                Links the modules 'safeg.o' and 'safeg_latency.o' (if
++                voluntary return is configured) with the Linux kernel.
++                The module 'safeg.o' corresponds to one of the appli-
++                cations 'safeg-xxxx.c' that must be linked to the file
++                name 'safeg.c'
++
++        safeg_latency.[h,c]
++                Files containing the switch_hook() function to perform
++                the voluntary return through SafeG
++
++        safeg_syscalls.h
++                Definition of the function safeg_switch_to_t()
++
++EXAMPLES
++
++
++        safeg-debugfs.c
++                Simple application that just creates a boolean value in
++                the debugfs filesystem. It does not need SafeG or ASP
++                actually. It was just created as a test to use a boolean
++                value to activate/deactivate the voluntary return from
++                user space (root privileges)
++
++        safeg-rtasks.c
++                Simple application that just creates a group of periodic
++                tasks with real-time priority. In the Trust world, use
++                the 'obj_safeg_btask application'. By enabling 'DBG_VOL_RET'
++                in safeg_latency.h, it is possible to see more or less
++                that the framework is working.
++
++        safeg-shvar.c
++                Simple application that shares data with Trust world. In
++                the Trust world, use 'obj_safeg_smc_shvar'. The data is
++                shared in different ways to solve the problem of synonyms
++                in virtual caches: invalidate dcache; change to uncached;
++                use dma_alloc_consistent; invalidate cache lines;
++
++BUILD
++
++        First, configure the kernel with support for SafeG and Voluntary
++        Return:
++
++        $ make ARCH=arm \
++        CROSS_COMPILE=/home/dsl/app/arm-none-eabi-2007q1-21/bin/arm-none-eabi- \
++        O=/home/dsl/kernels/linux-2.6.24-working/build/ menuconfig
++
++        Then, select the application you want to compile:
++
++        $ ln -s safeg-xxxx.c safeg.c
++
++        Alternatively, build user-space applications as in the directory
++        rt-tests of safeg repository. Finally, compile the Linux kernel:
++
++        $ make ARCH=arm \
++        CROSS_COMPILE=/home/dsl/app/arm-none-eabi-2007q1-21/bin/arm-none-eabi- \
++        O=/home/dsl/kernels/linux-2.6.24-working/build/ uImage
++
+--- /dev/null
++++ b/safeg/safeg-debugfs.c
+@@ -0,0 +1,84 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <asm/io.h>         /* for virt_to_phys */
++#include <linux/kthread.h>  /* for kthreads */
++#include <linux/delay.h>    /* for msleep */
++#include <linux/sched.h>
++#include <linux/debugfs.h>
++
++#define TASK_PRIORITY   12
++#define PERIOD_MS      1000
++
++static struct dentry *safeg_debugfs_dir, *safeg_debugfs_activate;
++static u32 safeg_vret_active = 0;
++
++static int the_task(void *arg)
++{
++	int n = 0;
++	struct sched_param schedpar;
++
++	printk(KERN_INFO "Task starts\n");
++
++	schedpar.sched_priority = TASK_PRIORITY;
++	sched_setscheduler(current, SCHED_FIFO, &schedpar);
++
++	while (1) {
++		schedule_timeout_interruptible
++			(msecs_to_jiffies(PERIOD_MS));
++		if (safeg_vret_active)
++			printk(KERN_INFO "task bool:%d (%d)\n",
++				safeg_vret_active, n++);
++	}
++
++	return 0;
++}
++
++static int __init safeg_init(void)
++{
++	printk(KERN_INFO "SAFEG driver initialization\n");
++
++	safeg_debugfs_dir = debugfs_create_dir("safeg", NULL);
++	if (!safeg_debugfs_dir)
++		goto error;
++
++	safeg_debugfs_activate =
++		debugfs_create_bool("activate_voluntary_return", 0644,
++				     safeg_debugfs_dir, &safeg_vret_active);
++	if (!safeg_debugfs_activate)
++		goto error;
++
++	kthread_run(the_task, NULL, "safeg");
++	return 0;
++
++error:
++	debugfs_remove(safeg_debugfs_dir);
++	debugfs_remove(safeg_debugfs_activate);
++	printk(KERN_INFO "ERROR in SAFEG initialization\n");
++	return -1;
++}
++
++static void __exit safeg_exit(void)
++{
++	debugfs_remove(safeg_debugfs_dir);
++	debugfs_remove(safeg_debugfs_activate);
++	printk(KERN_INFO "Goodbye SAFEG\n");
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/safeg-mmap.c
+@@ -0,0 +1,125 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <asm/io.h>         /* for virt_to_phys, ioremap */
++#include <linux/fs.h>       /* for alloc_chrdev_region */
++#include <linux/cdev.h>     /* for cdev_alloc */
++#include <linux/dma-mapping.h> /* for dma_alloc_coherent */
++
++#define DBG_INIT true
++
++#ifndef DEBUG
++#define DEBUG(enable,x,args...)  \
++	if(enable) printk(KERN_INFO "" x, ##args)
++#endif /* DEBUG */
++
++#define SHM_PHYS_ADDRESS	0x4000000UL /* 64MB */
++#define SHM_SIZE		0x100000UL /* 1MB */
++
++static int major;
++static struct cdev safeg_cdev;
++static u32 pa;
++static void *va;
++
++static int safeg_open(struct inode *inode, struct file *filp)
++{
++	DEBUG(DBG_INIT, "OPEN called\n");
++	return 0;
++}
++
++static int safeg_mmap(struct file *filp, struct vm_area_struct *vma)
++{
++// 	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
++// 			    vma->vm_end - vma->vm_start,
++// 			    vma->vm_page_prot))
++	DEBUG(DBG_INIT, "MMAP called\n");
++	if (remap_pfn_range(vma,
++			    vma->vm_start,
++			    SHM_PHYS_ADDRESS >> PAGE_SHIFT,
++			    vma->vm_end - vma->vm_start, /* TODO: check < SHM_SIZE */
++			    vma->vm_page_prot))
++		return -EAGAIN;
++
++	/* TODO: check Remapping Specific I/O Regions section */
++// 	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
++// 	unsigned long physical = SHM_PHYS_ADDRESS + off;
++// 	unsigned long vsize = vma->vm_end - vma->vm_start;
++// 	unsigned long psize = simple_region_size - off;
++// 	if (vsize > psize)
++// 		return -EINVAL; /* spans too high */
++// 	remap_pfn_range(vma, vma_>vm_start, physical, vsize, vma->vm_page_prot);
++
++	return 0;
++}
++
++static struct file_operations safeg_fops = {
++	.owner   = THIS_MODULE,
++	.open    = safeg_open,
++	.mmap    = safeg_mmap,
++};
++
++static int __init safeg_init(void)
++{
++	int err;
++	dev_t dev;
++// 	dma_addr_t shm_handle;
++
++	DEBUG(DBG_INIT, "SafeG allocate shared memory\n");
++
++	va = ioremap_nocache(SHM_PHYS_ADDRESS, SHM_SIZE);
++	pa = (unsigned long)SHM_PHYS_ADDRESS;
++
++	memset(va, 0x69, 100);
++
++// 	va = dma_alloc_coherent(NULL, 4, &shm_handle, GFP_KERNEL);
++// 	if (!va) {
++// 		err = ENOMEM;
++// 		goto init_error;
++// 	}
++// 	pa  = (unsigned long)shm_handle;
++
++	DEBUG(DBG_INIT, "Allocating SafeG major/minor\n");
++	err = alloc_chrdev_region(&dev, 0, 1,"safeg");
++	major = MAJOR(dev);
++
++	DEBUG(DBG_INIT, "mknod /dev/safeg c %d 0 (/proc/devices)\n", major);
++	DEBUG(DBG_INIT, "chmod 0664 /dev/safeg\n");
++
++	DEBUG(DBG_INIT, "Register SafeG char device\n");
++
++	cdev_init(&safeg_cdev, &safeg_fops);
++	safeg_cdev.owner = THIS_MODULE;
++	err = cdev_add (&safeg_cdev, dev, 1);
++	if (err) goto init_error;
++
++	return 0;
++
++init_error:
++	DEBUG(DBG_INIT, "Error %d at initialization", err);
++	return err;
++}
++
++static void __exit safeg_exit(void)
++{
++	DEBUG(DBG_INIT, "Goodbye SAFEG\n");
++	cdev_del(&safeg_cdev);
++	unregister_chrdev_region(MKDEV(major, 0), 1);
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/safeg-mqueue.c
+@@ -0,0 +1,124 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++
++// execute this in the target:
++// mount -t debugfs nodev /sys/kernel/debug
++// echo 1 > /sys/kernel/debug/safeg/activate_voluntary_return
++// mount -t mqueue none /dev/mqueue
++// ./mq_send.exe -p 4 -b 42 -c 1 /safeg_mq_0
++// ./mq_receive.exe -c 1 /safeg_mq_1
++
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <asm/io.h>         /* for virt_to_phys */
++#include <linux/kthread.h>  /* for kthreads */
++#include <linux/delay.h>    /* for msleep */
++#include <linux/sched.h>
++#include <linux/debugfs.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/mqueue.h>
++
++#define TASK_PRIORITY   12
++#define PERIOD_MS      1000
++
++static struct dentry *safeg_debugfs_dir, *safeg_debugfs_activate;
++static u32 safeg_vret_active = 0;
++
++extern int safeg_mq_create(char *name);
++
++extern int safeg_mq_receive(mqd_t mqdes,
++			    char *u_msg_ptr,
++			    size_t msg_len,
++			    unsigned int *msg_prio);
++
++extern int safeg_mq_send(mqd_t mqdes,
++			 const char *u_msg_ptr,
++			 size_t msg_len,
++			 unsigned int msg_prio);
++
++char buffer[10000];
++
++static int the_task(void *arg)
++{
++	struct sched_param schedpar;
++	int err;
++	mqd_t id0, id1;
++	unsigned int pri;
++
++	printk(KERN_INFO "Task starts\n");
++
++	schedpar.sched_priority = TASK_PRIORITY;
++	sched_setscheduler(current, SCHED_FIFO, &schedpar);
++
++	while (1) {
++		schedule_timeout_interruptible(msecs_to_jiffies(PERIOD_MS));
++		if (safeg_vret_active) goto recvloop;
++	}
++
++recvloop:
++	id0 = (mqd_t)safeg_mq_create("safeg_mq_0");
++	printk("created mqueue (id0:%d)\n", id0);
++
++	id1 = (mqd_t)safeg_mq_create("safeg_mq_1");
++	printk("created mqueue (id1:%d)\n", id1);
++
++	while(1) {
++		schedule_timeout_interruptible(msecs_to_jiffies(PERIOD_MS));
++		err = safeg_mq_receive(id0, buffer, sizeof(buffer),&pri);
++		printk("mq received %d bytes (pri:%u)\n", err, pri);
++
++		err = safeg_mq_send(id1, buffer, (size_t)err, pri);
++		printk("message forwarded\n");
++	}
++	return 0;
++}
++
++static int __init safeg_init(void)
++{
++	printk(KERN_INFO "SAFEG driver initialization\n");
++
++	safeg_debugfs_dir = debugfs_create_dir("safeg", NULL);
++	if (!safeg_debugfs_dir)
++		goto error;
++
++	safeg_debugfs_activate =
++		debugfs_create_bool("activate_voluntary_return", 0644,
++				     safeg_debugfs_dir, &safeg_vret_active);
++	if (!safeg_debugfs_activate)
++		goto error;
++
++	kthread_run(the_task, NULL, "safeg");
++	return 0;
++
++error:
++	debugfs_remove(safeg_debugfs_dir);
++	debugfs_remove(safeg_debugfs_activate);
++	printk(KERN_INFO "ERROR in SAFEG initialization\n");
++	return -1;
++}
++
++static void __exit safeg_exit(void)
++{
++	debugfs_remove(safeg_debugfs_dir);
++	debugfs_remove(safeg_debugfs_activate);
++
++	printk(KERN_INFO "Goodbye SAFEG\n");
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/safeg-panic.c
+@@ -0,0 +1,76 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <asm/io.h>         /* for virt_to_phys, ioremap */
++#include <linux/fs.h>       /* for alloc_chrdev_region */
++#include <linux/cdev.h>     /* for cdev_alloc */
++#include <linux/dma-mapping.h> /* for dma_alloc_coherent */
++
++#define DBG_INIT true
++
++#ifndef DEBUG
++#define DEBUG(enable,x,args...)  \
++    if(enable) printk(KERN_INFO "" x, ##args)
++#endif /* DEBUG */
++
++static int major;
++static struct cdev safeg_cdev;
++
++static int safeg_open(struct inode *inode, struct file *filp)
++{
++    panic("CRASH!!");
++	return 0;
++}
++
++static struct file_operations safeg_fops = {
++	.owner   = THIS_MODULE,
++	.open    = safeg_open,
++};
++
++static int __init safeg_init(void)
++{
++	int err;
++	dev_t dev;
++
++	err = alloc_chrdev_region(&dev, 0, 1,"safeg");
++	major = MAJOR(dev);
++
++	DEBUG(DBG_INIT, "mknod /dev/safeg c %d 0 (/proc/devices)\n", major);
++	DEBUG(DBG_INIT, "chmod 0664 /dev/safeg\n");
++
++	cdev_init(&safeg_cdev, &safeg_fops);
++	safeg_cdev.owner = THIS_MODULE;
++	err = cdev_add (&safeg_cdev, dev, 1);
++	if (err) goto init_error;
++
++	return 0;
++
++init_error:
++	DEBUG(DBG_INIT, "Error %d at initialization", err);
++	return err;
++}
++
++static void __exit safeg_exit(void)
++{
++	DEBUG(DBG_INIT, "Goodbye SAFEG\n");
++	cdev_del(&safeg_cdev);
++	unregister_chrdev_region(MKDEV(major, 0), 1);
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG panic driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/safeg-ring.c
+@@ -0,0 +1,300 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <linux/kthread.h>  /* for kthreads */
++#include <linux/delay.h>    /* for msleep */
++#include <linux/debugfs.h>  /* for debugfs functions */
++#include <linux/mqueue.h>   /* for safeg_mq_* usage */
++#include <linux/wait.h>     /* for wait_event_, wake_up_interruptible */
++#include <linux/dma-mapping.h> /* for ioremap_nocache */
++#include <linux/interrupt.h>   /* for request_irq */
++
++#define DBG_INIT true
++
++#define POLICY_POLLING false
++
++#ifndef DEBUG
++#define DEBUG(enable,x,args...)  \
++	if(enable) printk(KERN_INFO "" x, ##args)
++#endif /* DEBUG */
++
++// Kernel command line: root=/dev/nfs rw
++// nfsroot=192.168.0.34:/home/dsl/kernels/rootfs/nfs,nolock,proto=tcp init=/init
++// rootwait ip=192.168.0.33 mem=64M memmap=64M$64M console=ttyAMA
++// androidboot.console=ttyAMA0 noinitrd
++// NOTE:
++// memmap=nn$ss means Mark specific memory (from ss to ss+nn) as reserved.
++//
++// execute this in the target:
++// mount -t debugfs nodev /sys/kernel/debug
++// echo 1 > /sys/kernel/debug/safeg/activate_inter_os
++// mount -t mqueue none /dev/mqueue
++// ./mq_send.exe -p 4 -b 42 -c 1 /safeg_mq_0
++// ./mq_receive.exe -c 1 /safeg_mq_1
++
++#define SHM_PHYS_ADDRESS	0x4000000UL /* 64MB */
++#define SHM_SIZE		0x100000UL /* 1MB */
++
++#define MX_MSG_DATA_BYTES	16 /* in bytes */
++#define MX_NUM_MSG		16 /* in messages (must be power of 2) */
++
++#define MX_NUM_MQUEUES		5 /* 0..MX_NUM_MQUEUEs-1 */
++
++// debug fs activation variables
++static struct dentry *safeg_debugfs_dir, *safeg_debugfs_activate;
++static u32 safeg_interos_active = 0;
++
++// mq functions
++extern int safeg_mq_create(char *name);
++
++extern int safeg_mq_receive(mqd_t mqdes,
++			    char *u_msg_ptr,
++			    size_t msg_len,
++			    unsigned int *msg_prio);
++
++extern int safeg_mq_send(mqd_t mqdes,
++			 const char *u_msg_ptr,
++			 size_t msg_len,
++			 unsigned int msg_prio);
++
++static mqd_t mqdes_rcv_table[MX_NUM_MQUEUES]; // to map ID -> mqd_t mqdes
++static mqd_t mqdes_snd_table[MX_NUM_MQUEUES]; // to map ID -> mqd_t mqdes
++
++static mqd_t id_to_rcvmqd(uint32_t id)
++{
++	if(id > MX_NUM_MQUEUES) return (mqd_t)-1;
++	return mqdes_rcv_table[id];
++}
++
++static mqd_t id_to_sndmqd(uint32_t id)
++{
++	if(id > MX_NUM_MQUEUES) return (mqd_t)-1;
++	return mqdes_snd_table[id];
++}
++
++// Inter OS communications data structures
++struct safeg_msg_t {
++	uint32_t id;
++	uint32_t pri;
++	uint32_t size;
++	uint8_t  data[MX_MSG_DATA_BYTES];
++};
++
++struct safeg_ring_t {
++	uint32_t prod_idx;
++	uint32_t cons_idx;
++	struct safeg_msg_t msg_queue[MX_NUM_MSG];
++};
++
++struct safeg_inter_os_data_t {
++	volatile uint32_t nt_state;
++#define STA_CLOSED 0
++#define STA_LISTEN 1
++	struct safeg_ring_t t2nt_ring;
++	struct safeg_ring_t nt2t_ring;
++};
++
++struct safeg_inter_os_data_t *inter_os_data = NULL;
++
++// Operations on the Ring Buffers
++// No synchronization (one reader and one writer)
++// They are all non-blocking so the user must call get_count to make
++// sure there is space of messages waiting
++// MX_NUM_MSG is 2^n so we can use free running indexes and then truncate them
++#define TRUNC(x) ((x) & (MX_NUM_MSG - 1))
++
++static uint32_t safeg_ring_get_count(const struct safeg_ring_t *ring)
++{
++	return TRUNC(ring->prod_idx - ring->cons_idx);
++}
++
++static void safeg_ring_read_msg(struct safeg_ring_t *ring,
++				struct safeg_msg_t  *msg)
++{
++	memcpy(msg, &ring->msg_queue[TRUNC(ring->cons_idx)], sizeof(*msg));
++	smp_wmb(); // just in case, a memory barrier
++	ring->cons_idx++;
++}
++
++// static void safeg_ring_write_msg(struct safeg_ring_t *ring,
++// 				 const struct safeg_msg_t  *msg)
++// {
++// 	memcpy(&ring->msg_queue[TRUNC(ring->prod_idx)], msg, sizeof(*msg));
++// 	smp_wmb(); // just in case a memory barrier
++// 	ring->prod_idx++;
++// }
++
++static DECLARE_WAIT_QUEUE_HEAD(wq);
++static int flag = 0;
++
++// message reception task (forwards it to local queue)
++static int task_ring_rcv(void *arg)
++{
++	struct safeg_msg_t rcv_msg;
++	struct safeg_ring_t *rcv_ring = &inter_os_data->t2nt_ring;
++	int err;
++	char mq_name[50];  // TODO: adjust more safeg_mq_xxx\0 = 9 + xxx + 1
++	int i;
++
++	while (1) {
++		schedule_timeout_interruptible(msecs_to_jiffies(1000));
++		if (safeg_interos_active) break;
++	}
++
++	printk(KERN_INFO "Task Ring Recv starts\n");
++
++	// create message queues and save the IDs
++	for(i=0; i<MX_NUM_MQUEUES; i++) {
++		sprintf(mq_name, "safeg_rcvmq_%d", i);
++		mqdes_rcv_table[i] = safeg_mq_create(mq_name);
++	}
++
++	inter_os_data->nt_state = STA_LISTEN;
++
++	while (1) {
++		if(POLICY_POLLING) {
++			schedule_timeout_interruptible(msecs_to_jiffies(5000));
++		} else {
++			wait_event_interruptible(wq, flag != 0);
++			flag = 0;
++		}
++
++		// Poll the reception ring buffer: t2nt_ring
++		if (safeg_ring_get_count(rcv_ring) > 0) {
++			safeg_ring_read_msg(rcv_ring, &rcv_msg);
++
++			err = safeg_mq_send(id_to_rcvmqd(rcv_msg.id),
++					    rcv_msg.data, rcv_msg.size,
++					    rcv_msg.pri);
++		}
++	}
++
++	return 0;
++}
++
++// message sending task
++static int task_ring_snd(void *arg)
++{
++	struct safeg_msg_t snd_msg;
++	struct safeg_ring_t *snd_ring = &inter_os_data->nt2t_ring;
++	int err;
++	char mq_name[50];  // TODO: adjust more safeg_mq_xxx\0 = 9 + xxx + 1
++	int i;
++
++	while (1) {
++		schedule_timeout_interruptible(msecs_to_jiffies(1000));
++		if (safeg_interos_active) break;
++	}
++
++	printk(KERN_INFO "Task Ring Send starts\n");
++
++	// create message queues and save the IDs
++	for(i=0; i<MX_NUM_MQUEUES; i++) {
++		sprintf(mq_name, "safeg_sndmq_%d", i);
++		mqdes_snd_table[i] = safeg_mq_create(mq_name);
++	}
++
++	inter_os_data->nt_state = STA_LISTEN;
++
++	while (1) {
++		// wait for an user space message
++		err = safeg_mq_receive(id_to_mqd(rcv_msg.id), rcv_msg.data,
++				       rcv_msg.size, rcv_msg.pri);
++
++
++extern int safeg_mq_receive(mqd_t mqdes,
++			    char *u_msg_ptr,
++			    size_t msg_len,
++			    unsigned int *msg_prio);
++
++
++
++// 		schedule_timeout_interruptible(msecs_to_jiffies(5000));
++		wait_event_interruptible(wq, flag != 0);
++		flag = 0;
++
++		// Poll the reception ring buffer: t2nt_ring
++		if (safeg_ring_get_count(rcv_ring) > 0) {
++			safeg_ring_read_msg(rcv_ring, &rcv_msg);
++// 			printk(KERN_INFO "safeg rcv. id:%u pri:%u size:%u\n",
++// 			       rcv_msg.id, rcv_msg.pri, rcv_msg.size);
++			err = safeg_mq_send(id_to_mqd(rcv_msg.id), rcv_msg.data,
++					    rcv_msg.size, rcv_msg.pri);
++		}
++	}
++
++	return 0;
++}
++
++
++static irqreturn_t safeg_irq_handler(int irq, void *dev_id)
++{
++	if (!safeg_interos_active) return IRQ_HANDLED;
++
++	printk(KERN_INFO "SafeG IRQ handler\n");
++	flag = 1;
++	wake_up_interruptible(&wq);
++	return IRQ_HANDLED;
++}
++
++static int __init safeg_init(void)
++{
++	int id;
++
++	DEBUG(DBG_INIT, "SafeG initialization\n");
++
++	safeg_debugfs_dir = debugfs_create_dir("safeg", NULL);
++	if (!safeg_debugfs_dir)
++		goto error;
++
++	safeg_debugfs_activate =
++		debugfs_create_bool("activate_inter_os", 0644,
++				     safeg_debugfs_dir, &safeg_interos_active);
++	if (!safeg_debugfs_activate)
++		goto error;
++
++	// remap the inter-os data memory region
++	inter_os_data = (struct safeg_inter_os_data_t *)
++		ioremap_nocache(SHM_PHYS_ADDRESS, SHM_SIZE);
++
++	if (request_irq(33, safeg_irq_handler, 0, "safeg", NULL) != 0)
++		goto error;
++
++	for(id=0; id<MX_NUM_MQUEUES; id++) {
++		kthread_run(task_ring_rcv, (void *)id, "task-ring-rcv-%d", id);
++		kthread_run(task_ring_snd, (void *)id, "task-ring-snd-%d", id);
++	}
++
++	return 0;
++
++error:
++	printk(KERN_INFO "ERROR in SAFEG initialization\n");
++	debugfs_remove(safeg_debugfs_dir);
++	debugfs_remove(safeg_debugfs_activate);
++	return -1;
++}
++
++static void __exit safeg_exit(void)
++{
++	debugfs_remove(safeg_debugfs_dir);
++	debugfs_remove(safeg_debugfs_activate);
++	printk(KERN_INFO "Goodbye world\n");
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/safeg-rtasks.c
+@@ -0,0 +1,193 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <asm/io.h>         /* for virt_to_phys */
++#include <linux/kthread.h>  /* for kthreads */
++#include <linux/delay.h>    /* for msleep */
++#include <linux/sched.h>
++#include "safeg_latency.h"
++
++#include <linux/time.h>
++#include <linux/posix-timers.h>
++#include <linux/ktime.h>
++#include <linux/hrtimer.h>
++
++#ifdef KTASK_ENABLE
++
++// Map kernel(0..98) => user(99..1)
++#define KPRIO_TO_USER(prio) (99 - (prio))
++
++#define TASK1_PRIORITY  KPRIO_TO_USER(LTASK0_NT_LW_PRIORITY) /* 5 => 94 */
++#define TASK2_PRIORITY  KPRIO_TO_USER(LTASK1_NT_LW_PRIORITY) /* 11 => 88 */
++#define TASK3_PRIORITY  KPRIO_TO_USER(LTASK1_NT_LW_PRIORITY+1) /* 12 => 87 */
++
++#define PERIOD_NS       2000000000UL /* 2s=2000000000U, 500ms=500000000U*/
++#define EXEC_NS		 200000000UL /* 200ms=200000000U, 5ms=5000000U */
++
++#define MAX_RT_TEST_THREADS	3
++
++struct test_thread_data {
++	int id;
++	u64 period_ns;
++	u64 exec_ns;
++	int prio;
++	struct task_struct *task;
++};
++
++static struct test_thread_data thread_data[MAX_RT_TEST_THREADS] = {
++	{.id        = 0,
++	 .period_ns = PERIOD_NS,
++	 .exec_ns   = EXEC_NS,
++	 .prio      = TASK1_PRIORITY,
++	 .task      = NULL},
++	{.id        = 1,
++	 .period_ns = PERIOD_NS*2,
++	 .exec_ns   = EXEC_NS*3,
++	 .prio      = TASK2_PRIORITY,
++	 .task      = NULL},
++	{.id        = 2,
++	 .period_ns = PERIOD_NS*3,
++	 .exec_ns   = EXEC_NS*5,
++	 .prio      = TASK3_PRIORITY,
++	 .task      = NULL}
++};
++
++#define THREAD_CLOCK   MAKE_THREAD_CPUCLOCK(0, CPUCLOCK_SCHED)
++
++// NOTE: this functions generates a lot of interrupts!!!!
++
++void eat(u64 ns)
++{
++	int ret;
++	struct timespec now, end;
++
++	ret = posix_cpu_clock_get (THREAD_CLOCK, &end);
++	if (ret != 0)
++		printk(KERN_INFO "ERROR %d\n", ret);
++
++	timespec_add_ns(&end, ns);
++
++	do {
++		ret = posix_cpu_clock_get(THREAD_CLOCK, &now);
++		if (ret != 0)
++			printk(KERN_INFO "ERROR %d\n", ret);
++	}
++	while ( timespec_compare(&now, &end) < 0);
++}
++
++// static void get_timestamp(unsigned long *s, unsigned long *us)
++// {
++// 	u64 ts = sched_clock();
++// 	*us = do_div(ts, NSEC_PER_SEC);
++// 	*us /= 1000;
++// 	*s = (unsigned long)ts;
++// }
++
++static int the_task(void *arg)
++{
++// 	int n = 0;
++// 	int i;
++	struct test_thread_data *data = &thread_data[(int)arg];
++	struct sched_param schedpar;
++// 	volatile uint32_t result = 0;
++// 	struct timespec begin, end, total;
++// 	unsigned long s, us;
++// 	struct timespec abs_time;
++	printk(KERN_INFO "ktask%d starts\n", data->id);
++
++	schedpar.sched_priority = data->prio;
++	sched_setscheduler(data->task, SCHED_FIFO, &schedpar);
++
++// 	ktime_get_ts(&abs_time);
++
++	while (1) {
++		schedule_timeout_interruptible
++			(nsecs_to_jiffies(data->period_ns));
++
++// 		timespec_add_ns(&abs_time, data->period_ns);
++// 		hrtimer_nanosleep(&abs_time, NULL, HRTIMER_MODE_ABS, CLOCK_MONOTONIC);
++
++// 		msleep(do_div(data->period_ns, 1000000L));
++
++
++// 		CP15_PM_CONTROL_WRITE(0);
++// 		CP15_PM_CYCLE_WRITE(0);
++// 		CP15_PM_CONTROL_WRITE(1);
++
++// 		ktime_get_ts(&begin);
++
++// 		get_timestamp(&s, &us);
++// 		printk(KERN_INFO "[%5lu.%06lu] ktask%d starts eating\n",
++// 		       s, us, data->id);
++
++		//printk(KERN_INFO "ktask%d starts eating\n", data->id);
++		trace_printk("ktask%d starts eating\n", data->id);
++		eat(data->exec_ns);
++		trace_printk("ktask%d finishes eating\n", data->id);
++		//printk(KERN_INFO "ktask%d finishes eating\n", data->id);
++
++// 		get_timestamp(&s, &us);
++// 		printk(KERN_INFO "[%5lu.%06lu] ktask%d finishes eating\n",
++// 		       s, us, data->id);
++
++// 		ktime_get_ts(&end);
++// 		total = timespec_sub(end, begin);
++
++// 		CP15_PM_CYCLE_READ(result);
++// 		result = result / 210;
++//
++// 		printk(KERN_INFO "thread_time:%llu ns, global_time:%u us",
++// 			data->exec_ns, result);
++
++// 		printk(KERN_INFO "thread_time:%llu ns, global_time:%ld ns",
++// 			data->exec_ns, total.tv_nsec);
++	}
++
++	return 0;
++}
++#endif /* KTASK_ENABLE */
++
++static int __init safeg_init(void)
++{
++#ifdef KTASK_ENABLE
++	int id;
++#endif
++
++	printk(KERN_INFO "SAFEG module loaded\n");
++
++#ifdef CONFIG_SAFEG_VOL_RETURN
++	if (latency_initialize() != 0) return -1;
++#endif /* CONFIG_SAFEG_VOL_RETURN */
++
++#ifdef KTASK_ENABLE
++	for (id = 0; id < 1; id++) {
++		thread_data[id].task =
++			kthread_run(the_task, (void *)id, "ktask-%d", id);
++		msleep(80);
++	}
++#endif
++	return 0;
++}
++
++static void __exit safeg_exit(void)
++{
++	printk(KERN_INFO "Goodbye world\n");
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/safeg-rtasks2.c
+@@ -0,0 +1,34 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++
++#include "safeg_latency.h"
++
++static int __init safeg_init(void)
++{
++	printk(KERN_INFO "SAFEG module loaded\n");
++	return latency_initialize();
++}
++
++static void __exit safeg_exit(void)
++{
++	printk(KERN_INFO "SafeG module exits\n");
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG driver");
++MODULE_LICENSE("GPL");
+--- /dev/null
++++ b/safeg/safeg-shvar.c
+@@ -0,0 +1,210 @@
++/*
++ * SAFEG driver
++ *
++ * Copyright (C) Nagoya University
++ * Daniel Sangorrin <daniel.sangorrin@gmail.com>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ */
++#include <linux/kernel.h>
++#include <linux/module.h>   /* for MODULE_AUTHOR..*/
++#include <linux/init.h>     /* for module_init */
++#include <asm/io.h>         /* for virt_to_phys */
++#include <linux/kthread.h>  /* for kthreads */
++#include <linux/delay.h>    /* for msleep */
++#include "safeg_syscalls.h" /* for safeg_switch_to_t */
++#include <linux/dma-mapping.h>
++
++/* Shared variable method */
++// #define SHVAR_METHOD_DMA
++// #define SHVAR_METHOD_BOOTARGS
++#define SHVAR_METHOD_FLUSHCACHE
++
++#ifdef SHVAR_METHOD_BOOTARGS
++// Kernel command line: root=/dev/nfs rw
++// nfsroot=192.168.0.34:/home/dsl/kernels/rootfs/nfs,nolock,proto=tcp init=/init
++// rootwait ip=192.168.0.33 mem=64M memmap=64M$64M console=ttyAMA
++// androidboot.console=ttyAMA0 noinitrd
++#define SHM_PHYS_ADDRESS	0x4000000UL /* 64MB */
++#define SHM_SIZE		0x100000UL /* 1MB */
++#endif
++
++#ifdef SHVAR_METHOD_FLUSHCACHE
++volatile int ltask_id = 0;
++
++/* Whole cache operations */
++#define CP15_ICACHE_INVALIDATE_ALL() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0)); \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 0":: "r"(0))
++
++#define CP15_DCACHE_INVALIDATE_ALL() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c6, 0":: "r"(0))
++
++#define CP15_CACHE_INVALIDATE_BOTH() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c7, 0":: "r"(0))
++
++#define CP15_DCACHE_CLEAN() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c10, 0":: "r"(0))
++
++#define CP15_DCACHE_INVALIDATE_CLEAN() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c14, 0":: "r"(0))
++
++/* Cache line Set/Index operations */
++
++#define CP15_ICACHE_LINE_INDEX_INVALIDATE(x) \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c5, 2"::"r"(x))
++
++#define CP15_DCACHE_LINE_INDEX_INVALIDATE(x) \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c6, 2"::"r"(x))
++
++#define CP15_DCACHE_LINE_INDEX_CLEAN(x) \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c10, 2"::"r"(x))
++
++#define CP15_DCACHE_LINE_INDEX_INVALIDATE_CLEAN(x) \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c14, 2"::"r"(x))
++
++/* Data barrier to make sure all operations are finished */
++#define CP15_DATASYNC_BARRIER() \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c10, 4":: "r"(0))
++
++#else
++volatile int *ltask_id = 0;
++#endif
++
++static struct task_struct *the_task_struct;
++
++static int the_task(void *arg)
++{
++// 	unsigned int way, line, index;
++// 	void *virt_add;
++// 	unsigned long phy_add;
++//
++// 	virt_add = (void *)&ltask_id;
++// 	phy_add  = virt_to_phys(virt_add);
++
++	printk(KERN_INFO "NT Task starts\n");
++
++	while (1) {
++		schedule_timeout_interruptible(msecs_to_jiffies(1000));
++		safeg_switch_to_t(T_SMC_SWITCH_RET, 0);
++
++#ifdef SHVAR_METHOD_FLUSHCACHE
++		/* Solution 1: clean invalidate all D-Cache */
++// 		CP15_DCACHE_INVALIDATE_CLEAN();
++
++		/* Solution 1b: equivalent but line by line */
++// 		for (way=0; way<4; way++) {
++// 			for (line=0; line<256; line++) {
++// 				index = (line << 5) | (way << 30);
++// 				CP15_DCACHE_LINE_INDEX_INVALIDATE_CLEAN(index);
++// 			}
++// 		}
++
++		/* Solution 2: clean invalidate the adecuate entries */
++// 		for (way=0; way<4; way++) {
++// 			index = (phy_add & 0x1FE0) | (way << 30);
++// 			CP15_DCACHE_LINE_INDEX_CLEAN(index);
++// 			CP15_DATASYNC_BARRIER();
++// 			index = ((unsigned int)virt_add & 0x1FE0) | (way << 30);
++// 			CP15_DCACHE_LINE_INDEX_INVALIDATE(index);
++// 		}
++
++		/* Solution 3: set arch/arm/mmu.c to non-cachable (nothing) */
++		/* Solution 4: use the TCM (nothing necessary) */
++
++		printk(KERN_INFO "shvar *(%p) = %d\n", &ltask_id, ltask_id);
++		ltask_id = ltask_id + 1;
++		CP15_DCACHE_INVALIDATE_CLEAN();
++#else
++		printk(KERN_INFO "shvar *(%p) = %d\n", ltask_id, *ltask_id);
++		*ltask_id = *ltask_id + 1;
++#endif
++	}
++
++	return 0;
++}
++
++#define CP15_VA_TO_PA_READ(x) \
++    __asm__ volatile ("mrc p15, 0, %0, c7, c4, 0":"=r"(x))
++
++#define CP15_VA_TO_PA_WRITE(x, perm)  \
++    __asm__ volatile ("mcr p15, 0, %0, c7, c8, %1"::"r"(x),"I"(perm))
++
++static int __init safeg_init(void)
++{
++	u32 phy_add;
++	void *virt_add;
++
++#ifdef SHVAR_METHOD_FLUSHCACHE
++	ltask_id = 0;
++	virt_add = (void *)&ltask_id;
++
++	CP15_VA_TO_PA_WRITE(virt_add, 1);
++	CP15_VA_TO_PA_READ(phy_add);
++
++	phy_add = ((unsigned int)phy_add & 0xFFFFFC00);
++	phy_add = ((unsigned int)phy_add | ((unsigned int)virt_add & 0x3FF));
++
++	printk(KERN_INFO "By CP15, virt:%p phy:%p\n",
++		virt_add, (void *)phy_add);
++
++	virt_add = (void *)&ltask_id;
++	phy_add  = virt_to_phys(virt_add);
++
++	printk(KERN_INFO "By Linux, virt:%p phy:%p\n",
++		virt_add, (void *)phy_add);
++#endif
++
++#ifdef SHVAR_METHOD_DMA
++	dma_addr_t dma_handle;
++
++	virt_add = dma_alloc_coherent(NULL, 4, &dma_handle, GFP_KERNEL);
++	if (!virt_add) {
++		printk(KERN_INFO "SAFEG: unable to allocate memory\n");
++		return -ENOMEM;
++	}
++	memset(virt_add, 0, 4);
++
++	ltask_id = (int *)virt_add;
++	phy_add  = (unsigned long)dma_handle;
++
++	printk(KERN_INFO "DMA alloc virt:%p phy:%p\n", ltask_id, (void *)phy_add);
++#endif
++
++#ifdef SHVAR_METHOD_BOOTARGS
++	virt_add = ioremap_nocache(SHM_PHYS_ADDRESS, SHM_SIZE);
++	ltask_id = (int *)virt_add;
++	phy_add  = SHM_PHYS_ADDRESS;
++#endif
++
++	safeg_switch_to_t(T_SMC_SWITCH_SHVAR, (int)phy_add);
++
++	the_task_struct = kthread_run(the_task, NULL, "nt-task");
++
++	return 0;
++}
++
++static void __exit safeg_exit(void)
++{
++	printk(KERN_INFO "Goodbye world\n");
++}
++
++module_init(safeg_init);
++module_exit(safeg_exit);
++
++MODULE_AUTHOR("Daniel Sangorrin <daniel.sangorrin@gmail.com>");
++MODULE_DESCRIPTION("SAFEG driver");
++MODULE_LICENSE("GPL");

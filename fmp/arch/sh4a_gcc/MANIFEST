@@ -1,0 +1,35 @@
+MANIFEST
+Makefile.prc
+makeoffset.c
+prc.tf
+prc_asm.inc
+prc_cfg1_out.h
+prc_config.c
+prc_config.h
+prc_insn.h
+prc_kernel.h
+prc_pcb.h
+prc_rename.def
+prc_rename.h
+prc_sil.h
+prc_stddef.h
+prc_support.S
+prc_timer.c
+prc_timer.cfg
+prc_timer.h
+prc_unrename.h
+prc_user.txt
+rproto1.h
+rproto1.tf
+rproto1_config.h
+sh4a.h
+sh7786.h
+sh7786.tf
+sh7786_config.h
+shelf.ld
+shlelf.ld
+start.S
+
+INCLUDE ../../target/sh7786_dev_gcc/MANIFEST
+INCLUDE ../../target/rproto1_dev_gcc/MANIFEST
+INCLUDE ../../pdic/sh/MANIFEST

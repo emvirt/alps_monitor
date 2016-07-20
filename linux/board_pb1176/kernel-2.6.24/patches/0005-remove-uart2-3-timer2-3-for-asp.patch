@@ -1,0 +1,126 @@
+From 83d287367c3c6eb9dd755f5cb00d073718b9e925 Mon Sep 17 00:00:00 2001
+From: Kenichiro Nakajima <nakajima@nces.is.nagoya-u.ac.jp>
+Date: Mon, 31 Mar 2008 18:01:55 +0900
+Subject: [PATCH] remove uart2&3, timer2&3 for asp.
+
+---
+ arch/arm/mach-realview/core.c            |   19 +++++++++++--------
+ arch/arm/mach-realview/realview_pb1176.c |   11 ++++++++++-
+ 2 files changed, 21 insertions(+), 9 deletions(-)
+
+--- a/arch/arm/mach-realview/core.c
++++ b/arch/arm/mach-realview/core.c
+@@ -527,11 +527,11 @@ static struct irqaction realview_timer_i
+ 
+ static cycle_t realview_get_cycles(void)
+ {
+-	return ~readl(timer3_va_base + TIMER_VALUE);
++	return ~readl(timer1_va_base + TIMER_VALUE);
+ }
+ 
+ static struct clocksource clocksource_realview = {
+-	.name	= "timer3",
++	.name	= "timer1",
+ 	.rating	= 200,
+ 	.read	= realview_get_cycles,
+ 	.mask	= CLOCKSOURCE_MASK(32),
+@@ -542,11 +542,11 @@ static struct clocksource clocksource_re
+ static void __init realview_clocksource_init(void)
+ {
+ 	/* setup timer 0 as free-running clocksource */
+-	writel(0, timer3_va_base + TIMER_CTRL);
+-	writel(0xffffffff, timer3_va_base + TIMER_LOAD);
+-	writel(0xffffffff, timer3_va_base + TIMER_VALUE);
++	writel(0, timer1_va_base + TIMER_CTRL);
++	writel(0xffffffff, timer1_va_base + TIMER_LOAD);
++	writel(0xffffffff, timer1_va_base + TIMER_VALUE);
+ 	writel(TIMER_CTRL_32BIT | TIMER_CTRL_ENABLE | TIMER_CTRL_PERIODIC,
+-		timer3_va_base + TIMER_CTRL);
++		timer1_va_base + TIMER_CTRL);
+ 
+ 	clocksource_realview.mult =
+ 		clocksource_khz2mult(1000, clocksource_realview.shift);
+@@ -575,9 +575,11 @@ void __init realview_timer_init(unsigned
+ 	 */
+ 	val = readl(__io_address(REALVIEW_SCTL_BASE));
+ 	writel((REALVIEW_TIMCLK << REALVIEW_TIMER1_EnSel) |
+-	       (REALVIEW_TIMCLK << REALVIEW_TIMER2_EnSel) | 
++	       (REALVIEW_TIMCLK << REALVIEW_TIMER2_EnSel) | val,
++#if 0
+ 	       (REALVIEW_TIMCLK << REALVIEW_TIMER3_EnSel) |
+ 	       (REALVIEW_TIMCLK << REALVIEW_TIMER4_EnSel) | val,
++#endif
+ 	       __io_address(REALVIEW_SCTL_BASE));
+ 
+ 	/*
+@@ -585,9 +587,10 @@ void __init realview_timer_init(unsigned
+ 	 */
+ 	writel(0, timer0_va_base + TIMER_CTRL);
+ 	writel(0, timer1_va_base + TIMER_CTRL);
++#if 0
+ 	writel(0, timer2_va_base + TIMER_CTRL);
+ 	writel(0, timer3_va_base + TIMER_CTRL);
+-
++#endif
+ 	/* 
+ 	 * Make irqs happen for the system timer
+ 	 */
+--- a/arch/arm/mach-realview/realview_pb1176.c
++++ b/arch/arm/mach-realview/realview_pb1176.c
+@@ -81,11 +81,13 @@ static struct map_desc realview_pb1176_i
+ 		.pfn		= __phys_to_pfn(REALVIEW_PB1176_TIMER0_1_BASE),
+ 		.length		= SZ_4K,
+ 		.type		= MT_DEVICE,
++#if 0
+ 	}, {
+ 		.virtual	= IO_ADDRESS(REALVIEW_PB1176_TIMER2_3_BASE),
+ 		.pfn		= __phys_to_pfn(REALVIEW_PB1176_TIMER2_3_BASE),
+ 		.length		= SZ_4K,
+ 		.type		= MT_DEVICE,
++#endif
+ 	}, {
+ 		.virtual	= IO_ADDRESS(REALVIEW_PB1176_L220_BASE),
+ 		.pfn		= __phys_to_pfn(REALVIEW_PB1176_L220_BASE),
+@@ -158,8 +160,9 @@ AMBA_DEVICE(aaci,	"fpga:04",	AACI,		NULL
+ AMBA_DEVICE(mmc0,	"fpga:05",	MMCI0,		&realview_mmc0_plat_data);
+ AMBA_DEVICE(kmi0,	"fpga:06",	KMI0,		NULL);
+ AMBA_DEVICE(kmi1,	"fpga:07",	KMI1,		NULL);
++#if 0
+ AMBA_DEVICE(uart3,	"fpga:09",	PB1176_UART3,	NULL);
+-
++#endif
+ /* DevChip Primecells */
+ AMBA_DEVICE(smc,	"dev:00",	PB1176_SMC,	NULL);
+ AMBA_DEVICE(sctl,	"dev:e0",	SCTL,		NULL);
+@@ -171,7 +174,9 @@ AMBA_DEVICE(rtc,	"dev:e8",	PB1176_RTC,	N
+ AMBA_DEVICE(sci0,	"dev:f0",	SCI,		NULL);
+ AMBA_DEVICE(uart0,	"dev:f1",	PB1176_UART0,	NULL);
+ AMBA_DEVICE(uart1,	"dev:f2",	PB1176_UART1,	NULL);
++#if 0
+ AMBA_DEVICE(uart2,	"dev:f3",	PB1176_UART2,	NULL);
++#endif
+ AMBA_DEVICE(ssp0,	"dev:f4",	PB1176_SSP,	NULL);
+ 
+ /* Primecells on the NEC ISSP chip */
+@@ -182,8 +187,10 @@ static struct amba_device *amba_devs[] _
+ //	&dmac_device,
+ 	&uart0_device,
+ 	&uart1_device,
++#if 0
+ 	&uart2_device,
+ 	&uart3_device,
++#endif
+ 	&smc_device,
+ 	&clcd_device,
+ 	&sctl_device,
+@@ -264,8 +271,10 @@ static void __init realview_pb1176_timer
+ {
+ 	timer0_va_base = __io_address(REALVIEW_PB1176_TIMER0_1_BASE);
+ 	timer1_va_base = __io_address(REALVIEW_PB1176_TIMER0_1_BASE) + 0x20;
++#if 0
+ 	timer2_va_base = __io_address(REALVIEW_PB1176_TIMER2_3_BASE);
+ 	timer3_va_base = __io_address(REALVIEW_PB1176_TIMER2_3_BASE) + 0x20;
++#endif
+ 
+ 	realview_timer_init(IRQ_DC1176_TIMER0);
+ }

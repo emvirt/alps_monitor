@@ -1,0 +1,5 @@
+# prc_config.c, prc_support.S
+prc_initialize
+prc_terminate
+
+INCLUDE "sh4a_gcc/prc"

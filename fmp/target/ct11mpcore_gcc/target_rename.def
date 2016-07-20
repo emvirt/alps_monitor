@@ -1,0 +1,23 @@
+# target_config.c
+target_mprc_initialize
+target_mmu_init
+target_initialize
+target_exit
+
+# ct11mpcore.c
+gic_cpu_stop
+gic_cpu_init
+gic_dis_stop
+gic_dis_init
+gic_dis_set_priority
+gic_dis_set_pending
+gic_dis_clear_pending
+gic_dis_enable_int
+gic_dis_disable_int
+ebtimer_init
+gic_dis_config
+gic_dis_probe_int
+ct11mpcore_uart_init
+ct11mpcore_putc
+
+INCLUDE "arm_gcc/mpcore/chip"

@@ -1,0 +1,395 @@
+=====================================================================
+                        AT91SKYEYEターゲット依存部
+                                  Last Modified: 2010 Apr 21 11:12:02
+=====================================================================
+
+○概要
+
+AT91SKYEYEターゲット依存部は，オープンソースのプロセッサシミュレータで
+あるSkyEyeの ARM7TDMI をベースとした AT91 システムをサポートしている．
+サポートしているプロセッサ数は，2〜4個であり，ディフォルトでは2個で動
+作する．なお，SkyEyeはTOPPERSプロジェクトでマルチプロセッサ向きに拡張
+されたものを使用する必要がある．
+
+○サポートしているコンフィギュレーション項目
+
+AT91SKYEYEターゲット依存部では，次のコンフィギュレーション項目をサポー
+トしている．
+
+・OS内部のロック単位
+  ・ジャイアントロック方式
+  ・プロセッサロック方式
+
+・スピンロックアーキテクチャ
+  ・ネイティブ方式（4個まで）
+  ・エミュレーション方式
+
+・タイマアーキテクチャ
+  ・グローバルタイマ方式
+  ・ローカルタイマ方式
+
+○SkyEye
+
+SkyEyeは，TOPPERSプロジェクトからTOPPERSカーネル向けシミュレーション環
+境として公開されているものを用いる．TOPPERSカーネル向けシミュレーショ
+ン環境は，以下のページからダウンロード可能である．
+
+  http://www.toppers.jp/sim.html
+
+○実行
+
+カーネルのビルド後，実行したいプロセッサ個数分のターミナルを開く．次に
+各ターミナルで次のコマンドを実行する．なお，PE1の実行は，他のプロセッ
+サを実行後に行うこと．$FMP$は，FMPを展開したパスである．
+
+PE1
+   $skyeye.exe -e fmp.exe -c $FMP$/target/at91skyeye_gcc/skyeye_pe1.conf 
+
+PE2
+   $skyeye.exe -e fmp.exe -c $FMP$/target/at91skyeye_gcc/skyeye_pe2.conf 
+
+PE3
+   $skyeye.exe -e fmp.exe -c $FMP$/target/at91skyeye_gcc/skyeye_pe3.conf 
+
+PE4
+   $skyeye.exe -e fmp.exe -c $FMP$/target/at91skyeye_gcc/skyeye_pe4.conf 
+
+○カーネルの使用リソース
+
+カーネルはプロセッサ毎に以下のリソースを使用する．
+
+  ・RAM
+     コードとデータを配置する．
+     使用量はオブジェクト数に依存する．
+  
+  ・TC1
+     カーネル内部のティックの生成に用いる．
+     
+  ・USART0
+     コンソールの出力に使用．
+
+  ・Mutex
+    ・ID  0 : プロセッサ1のタスクロック 
+    ・ID  1 : プロセッサ1のオブジェクトロック 
+    ・ID  2 : プロセッサ2のタスクロック 
+    ・ID  3 : プロセッサ2のオブジェクトロック 
+    ・ID  4 : プロセッサ3のタスクロック 
+    ・ID  5 : プロセッサ3のオブジェクトロック 
+    ・ID  6 : プロセッサ4のタスクロック 
+    ・ID  7 : プロセッサ4のオブジェクトロック 
+    ・ID  6 : プロセッサ4のタスクロック 
+    ・ID  7 : プロセッサ4のオブジェクトロック 
+    ・ID 10 : システムインタフェースレイヤーのスピンロック
+    ・ID 20 : ネイティブ方式のスピンロック
+    ・ID 21 :  ネイティブ方式のスピンロック
+    ・ID 22 : ネイティブ方式のスピンロック
+    ・ID 23 :  ネイティブ方式のスピンロック
+
+  ・プロセッサ間割込み
+    ・プロセッサ毎に1個使用．
+
+○デバッグ環境
+
+デバッグ環境としては，skyeyeのサポートする方法を用いることができる．
+arm-elf-gdb によるデバッグの動作確認を行った．
+
+○コンパイラ
+
+GCC 4.4.1 で動作確認を行った．動作確認した GCC は，以下のサイトから
+Windows版のバイナリをダウンロードして使用した．具体的なバージョンは，
+gcc version 4.4.1 (Sourcery G++ Lite 2009q3-68) である．
+
+  http://www.codesourcery.com/
+
+○カーネル終了時の処理
+
+ext_ker が呼び出されカーネル終了時には，at91skyeye.h にある 
+at91skyeye_exit() が実行される．ディフォルトでは，特に処理は記述されて
+いない．独自の処理処理を追加したい場合は，at91skyeye_exit() の内容を書
+き換えること．
+
+○ gcovによるカバレッジ取得
+
+gcovによるカバレッジを取得したい場合には，Makefileで ENABLE_GCOV を 
+true に定義すること．
+
+プロファイルを取得するには，ext_ker()を呼び出してカーネルを呼び出す必
+要がある．
+
+カーネル実行後にカーネルがあるディレクトリで以下のコマンドを実行すると，
+カバレッジの結果が xxx.c.gcov に出力される．
+
+ $arm-none-eabi-gcov.exe *.gcda
+
+カバレッジの結果をhtml化するlcovを使うためには，lcovに以下のパッチが必
+要となる(_orgがlcov 1.7のオリジナルファイル)．
+
+--------------------------------------------------------------------------
+*** geninfo_org Sun Aug  2 12:47:32 2009
+--- geninfo     Sun Aug  2 12:52:26 2009
+*************** sub process_dafile($)
+*** 647,653 ****
+        if ($preserve_paths)
+        {
+                $gcov_error = system_no_output(1, $gcov_tool, $da_filename,
+!                                              "-o", $object_dir,
+                                               "--preserve-paths",
+                                               "-b");
+        }
+--- 647,654 ----
+        if ($preserve_paths)
+        {
+                $gcov_error = system_no_output(1, $gcov_tool, $da_filename,
+! #2009-08-02 : honda modify
+! #                                            "-o", $object_dir,
+                                               "--preserve-paths",
+                                               "-b");
+        }
+*************** sub process_dafile($)
+*** 721,727 ****
+        foreach $gcov_file (@gcov_list)
+        {
+                ($source, $object) = read_gcov_header($gcov_file);
+! 
+                if (defined($source))
+                {
+                        $source = solve_relative_path($base_dir, $source);
+--- 722,729 ----
+        foreach $gcov_file (@gcov_list)
+        {
+                ($source, $object) = read_gcov_header($gcov_file);
+!               #2009-08-02 : honda midify
+!               $source =~ s/(.*)\r$/$1/;
+                if (defined($source))
+                {
+                        $source = solve_relative_path($base_dir, $source);
+--------------------------------------------------------------------------
+*** genhtml_org Sun Aug  2 13:16:05 2009
+--- genhtml     Sun Aug  2 13:16:19 2009
+*************** sub write_frameset(*$$$)
+*** 3488,3497 ****
+        write_html($_[0], <<END_OF_HTML)
+        <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Frameset//EN">
+  
+!       <html lang="en">
+  
+        <head>
+!         <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">          <title>$_[3]</title>
+          <link rel="stylesheet" type="text/css" href="$_[1]gcov.css">
+        </head>
+--- 3488,3497 ----
+        write_html($_[0], <<END_OF_HTML)
+        <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Frameset//EN">
+  
+!       <html lang="ja">
+  
+        <head>
+!         <meta http-equiv="Content-Type" content="text/html; charset=EUC-JP">
+          <title>$_[3]</title>
+          <link rel="stylesheet" type="text/css" href="$_[1]gcov.css">
+        </head>
+*************** sub write_overview(*$$$$)
+*** 3550,3560 ****
+        write_html($_[0], <<END_OF_HTML)
+        <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+  
+!       <html lang="en">
+  
+        <head>
+          <title>$_[3]</title>
+!         <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">          <link rel="stylesheet" type="text/css" href="$_[1]gcov.css">
+        </head>
+  
+--- 3550,3560 ----
+        write_html($_[0], <<END_OF_HTML)
+        <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+  
+!       <html lang="ja">
+  
+        <head>
+          <title>$_[3]</title>
+!         <meta http-equiv="Content-Type" content="text/html; charset=EUC-JP">
+          <link rel="stylesheet" type="text/css" href="$_[1]gcov.css">
+        </head>
+  
+*************** sub get_html_prolog($)
+*** 4749,4758 ****
+                $result = <<END_OF_HTML
+  <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+  
+! <html lang="en">
+  
+  <head>
+!   <meta http-equiv="Content-Type" content="text/html; charset=ISO-8859-1">
+    <title>\@pagetitle\@</title>
+    <link rel="stylesheet" type="text/css" href="\@basedir\@gcov.css">
+  </head>
+--- 4749,4758 ----
+                $result = <<END_OF_HTML
+  <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+  
+! <html lang="ja">
+  
+  <head>
+!   <meta http-equiv="Content-Type" content="text/html; charset=ECU-JP">
+    <title>\@pagetitle\@</title>
+    <link rel="stylesheet" type="text/css" href="\@basedir\@gcov.css">
+  </head>
+--------------------------------------------------------------------------
+*** lcov_org    Mon Nov 17 22:50:26 2008
+--- lcov        Sun Aug  2 23:41:19 2009
+*************** sub merge_func_data($$$)
+*** 1338,1344 ****
+        my %result;
+        my $func;
+  
+!       %result = %{$funcdata1};
+  
+        foreach $func (keys(%{$funcdata2})) {
+                my $line1 = $result{$func};
+--- 1338,1350 ----
+        my %result;
+        my $func;
+  
+!       #2009-08-02 honda
+!       if(ref $funcdata1 eq 'HASH'){ 
+!               %result = %{$funcdata1};
+!       }
+!       else {
+!                       return \%result;
+!       }
+  
+        foreach $func (keys(%{$funcdata2})) {
+                my $line1 = $result{$func};
+*************** sub add_fnccount($$)
+*** 1370,1376 ****
+        my $f_hit;
+        my $function;
+  
+!       %result = %{$fnccount1};
+        foreach $function (keys(%{$fnccount2})) {
+                $result{$function} += $fnccount2->{$function};
+        }
+--- 1376,1388 ----
+        my $f_hit;
+        my $function;
+  
+!       #2009-08-02 honda
+!       if(ref $fnccount1 eq 'HASH'){ 
+!               %result = %{$fnccount1};
+!       } else {
+!               return (\%result, $f_found, $f_hit);
+!       }
+! 
+        foreach $function (keys(%{$fnccount2})) {
+                $result{$function} += $fnccount2->{$function};
+        }
+--------------------------------------------------------------------------
+
+カバレッジの取得後，以下のコマンドを実行すると，coverage_html 以下にカ
+バレッジ結果のhtmlが生成される．
+
+   $make lcov
+
+○各種設定の変更
+
+幾つかのパラメータは変更可能になっている．設定ファイル毎に設定可能項目
+は次のようになっている．
+
+●Makefile.target の設定項目
+
+・GCC_TARGET
+  GCCの suffix を定義
+
+・INCLUDES
+  インクルード指定
+
+・COPTS
+  Cコンパイラへのオプション
+
+・LDFLAGS
+  リンカへのオプション
+
+●target_config.h の設定項目
+
+・DEFAULT_ISTKSZ
+  ディフォルトの非タスクコンテキスト用のスタックサイズ
+
+・SIL_DLY_TIM1/2
+  微少時間待ちのための定義
+
+・TTYPE_KLOCK
+  カーネルロックの方式を設定
+
+・TTYPE_SPN 
+  スピンロック機能の方式を設定
+
+●target_kernel.h の設定項目
+
+・TNUM_PRCID 
+  プロセッサ数
+
+・TOPPERS_SYSTIM_LOCAL
+  ローカルタイマ方式を有効に
+
+・TOPPERS_SYSTIM_GLOBAL
+  グローバルタイマ方式を有効に
+
+○変更履歴
+
+2010/04/21
+・SkyEye DeviceManager Extension 2.1.0 に対応．
+・起動時にSkyEyeのバージョンを確認するように変更．
+
+2010/03/29
+・skyeye_pe3/_pe4のメモリマップの設定の修正．
+
+2010/02/26
+・target_timer.c をTTG用に変更．
+・target_test.o をディフォルトでリンクするように変更．
+
+2010/02/16
+・グローバルタイマ方式時にタイマ割込みをTCL_ADMIN_PRC（クラスID 5）に
+  属するように変更．
+
+2010/01/27
+・ロック変数の型(LOCK)の定義をtypedefに変更．
+・スピンロックの型(SPNLOCK)の定義をtypedefに変更．
+
+2009/12/16
+・システム終了時に，マスタプロセッサ以外は，_exit()を呼び出してSkyEye
+  を終了させるように変更．
+
+2009/11/30
+・リンカスクリプトを generic-hosted.ld ベースから，
+  armulator-ram-hosted.ld ベースに変更．
+  コード・データサイズを大きくすると，標準関数やgcovが正しく動作しない
+  問題を解決．同時に skyeye.conf のメモリの設定をリンカスクリプトの内
+  容と統一．
+
+2009/11/03
+・SIL_LOC_SPNの仕様を変更．
+  ロック取得を待つ間は，割込みをマスクしないように変更．
+
+2009/10/16
+・アセンブラファイル中の分岐命令を AAPCS推奨に変更．
+  mov pc, xx -> bx pc
+
+2009/08/02
+・newlibのサポート．サポートに伴い，SkyEyeはTOPPERSプロジェクトから公
+  開している SkyEye -V1.2 DeviceManager Extension 2.0.3 以降 が必要と
+  なる．
+・gcovのサポート．
+・lcovのサポート．
+
+2009/07/09
+・target_timer_initialize()でタイマ周期にTIMER_CLOCKの値を反映するよう
+  に修正．
+
+2009/07/08
+ 性能評価用のマクロをサイクルカウンタの値を取得するように定義．
+
+2009/06/25
+ 新規作成．
+
+以上．

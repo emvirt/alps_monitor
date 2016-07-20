@@ -1,0 +1,908 @@
+
+						SafeG 0.3 User's Manual
+						~~~~~~~~~~~~~~~~~~~~~~~
+
+						    Daniel Sangorrin
+					   (daniel.sangorrin@gmail.com)
+
+							  15-Dec-2011
+
+0.- Index
+    =====
+
+1.	Introduction
+	1.1 SafeG and ARM TrustZone
+	1.2 Spatial and Time isolation
+2.	Supported hardware and guest operating systems
+3.	SafeG code overview
+4.	Build instructions
+	4.1 Building the Linux kernel (optional)
+	4.2 Building the Filesystem (optional)
+	4.3 Buildign u-boot (optional)
+	4.4 Building SafeG
+5.	Load instructions
+	5.1 Setting up a TFTP server (optional)
+	5.2 Setting up a NFS server (optional)
+	5.3 PB1176-JZF board
+	5.4 IDEA6410 board
+	5.5 MINI6410 board
+	5.6 Kyoto KZM-CA9-01 board
+	5.7 Freescale i.mx53 QuickStart board
+6.	Experimental features
+	6.1 Integrated scheduling
+	6.2 Inter-OS communications
+7.	Future roadmap
+8.	References
+
+1.- Introduction
+    ============
+
+1.1 SafeG and ARM TrustZone
+    -----------------------
+
+SafeG (Safety Gate) is a dual-OS monitor [1][3] designed to concurrently
+execute an RTOS (Real-Time Operating System) and a GPOS (General-Purpose
+Operating System) on the same hardware platform. SafeG's architecture takes
+advantage of the ARM TrustZone security extensions which introduce the concept
+of Trust and Non-Trust states:
+
+	- Trust state provides similar behavior to existing privileged and user
+	  mode levels in ARM processors.
+
+	- On the other hand, code running under Non-Trust state, even in privileged
+	  mode, cannot access memory space (devices included) that was allocated
+	  for Trust state usage, nor can it execute certain instructions that are
+	  considered critical.
+
+In order to control the TrustZone state, a new mode called "Secure Monitor"
+mode has been added to the processor. Switching between Trust and Non-Trust
+state is performed under Security Monitor mode by SafeG with interrupts
+disabled.
+
+The main properties of SafeG's architecture are:
+
+a.- Allows running an RTOS and a GPOS concurrently on top of the same
+	processor (single and multi-core).
+
+b.- RTOS memory and devices are protected from ilegal accesses by the
+	GPOS. This is supported by configuring resources used by the RTOS
+	to be accessible only from Trust state. The remaining resources
+	are configured to be accessible both from Trust and Non-Trust state.
+
+c.- RTOS real-time requirements are guaranteed. Time isolation of the
+	RTOS activities is supported by carefully allocating two types of
+	interrupt (i.e.: FIQ and IRQ) to each TrustZone state:
+
+		- FIQ interrupts are forwarded to the RTOS.
+		- IRQ interrupts are forwarded to the GPOS.
+
+	In Trust state, IRQs are disabled so that the GPOS cannot interrupt
+	the execution of the RTOS. For that reason, the GPOS only executes
+	upon an explicit request by the RTOS. This is achieved through the
+	Secure Monitor Call (SMC) instruction. On the other hand, during the
+	GPOS execution, FIQs are enabled so that the RTOS can recover the control
+	of the  processor (e.g.: through the FIQ associated to the system timer).
+	TrustZone is configured to prevent the Non-Trust side from disabling
+	FIQ interrupts.
+
+d.- It takes advantage of hardware extensions in order to achieve very
+	low execution overhead.
+
+e.- The GPOS does not require major code modifications. Except for
+	device and memory usage configuration, the GPOS can be considered
+	to be executed under full virtualization.
+
+f.- SafeG's code footprint is extremely small and it runs with interrupts
+	disabled which can smooth critical system's certification.
+
+2.- Supported hardware and guest operating systems
+    ==============================================
+
+SafeG is limited by design to ARM processors with support for the TrustZone
+security extensions. These include the following processors:
+
+	- ARM Cortex-A15
+	- ARM Cortex-A9
+	- ARM Cortex-A8
+	- ARM Cortex-A5
+	- ARM1176
+
+Additionally, the target hardware must support the following TrustZone
+security features:
+
+	- Separation of Trust and Non-Trust memory and peripherals
+	- Separation of Trust and Non-Trust interrupts
+
+The latest release supports the following boards and guest operating systems
+(T=Trust, NT=Non-Trust):
+
+  - ARM PB1176JZF-S RealView Platform Baseboard (ARM1176-JZF dev chip)
+      * Trust OS:
+          + T-ASP 1.6
+      * Non-Trust OS:
+          + NT-ASP 1.6
+          + Linux 2.6.24
+          + Linux 2.6.33
+
+  - IDEA6410 (Samsung S3C410 chip)
+      * Trust OS:
+          + T-ASP 1.6 (Note: only works with NT-ASP)
+          + T-BareMetal
+      * Non-Trust OS:
+          + NT-ASP 1.6
+          + Linux 2.6.33
+          + Android 2.1
+
+  - MINI6410 board
+      * Trust OS:
+          + T-ASP 1.6 (Note: only works with NT-ASP)
+          + T-BareMetal
+      * Non-Trust OS:
+          + NT-ASP 1.6
+          + Android 2.1
+          + Qtopia 2.2.0
+          + Ubuntu 9.10
+
+  - Kyoto KZM-CA9-01 board
+      * Trust OS:
+          + T-FMP 1.6
+      * Non-Trust OS:
+          + NT-FMP 1.6
+          + Linux 2.6.28
+
+  - Freescale i.mx53 QuickStart board
+      * Trust OS:
+          + T-BareMetal
+      * Non-Trust OS:
+          + NT-BareMetal
+
+3.- SafeG code overview
+    ===================
+
+SafeG code is distributed under the TOPPERS licence and can be downloaded
+by using a subversion client:
+
+	- List SafeG code releases
+
+	$ svn list http://dev.toppers.jp/svn/safeg/branches/
+
+	- Checkout a certain release
+
+	$ svn co http://dev.toppers.jp/svn/safeg/branches/0.3 safeg
+
+	- Checkout the latest release
+
+	$ svn co http://dev.toppers.jp/svn/safeg/trunk safeg
+
+The current layout of SafeG source code is as follows:
+
+	toppers-safeg/
+	|-- Makefile                (global Makefile to build SafeG + guest OSes)
+	|-- res/                    (resources: prebuilt files, toolchain, etc)
+	|-- asp/                    (TOPPERS/ASP 1.6 with modifications)
+	|   |-- ...
+	|   |-- obj/
+	|   |   |-- obj_safeg_xxx/  (example applications)
+	|   |   |   |--trust/       (trust-side application)
+	|   |   |   `--non-trust/   (non-trust side application)
+	|   |   `-- README.txt      (explanation of each application)
+	|   `-- target/
+	|       |-- xxxnt_gcc/      (target-dependent code for XXX board non-trust)
+	|       `-- xxxt_gcc/       (target-dependent code for XXX board trust)
+	|-- fmp/                    (TOPPERS/FMP 1.6 with modifications)
+	|   |   |-- obj_safeg_xxx/  (example applications)
+	|   |   |   |--trust/       (trust-side application)
+	|   |   |   `--non-trust/   (non-trust side application)
+	|   |   `-- README.txt      (explanation of each application)
+	|   `-- target/
+	|       |-- xxxnt_gcc/      (target-dependent code for XXX board non-trust)
+	|       `-- xxxt_gcc/       (target-dependent code for XXX board trust)
+	|-- bare/
+	|   `-- board_xxx/          (baremetal examples for XXX board)
+	|-- debug/
+	|   `-- board_xxx/          (debug config/scripts for XXX board)
+	|-- doc/
+	|   |-- porting.txt         (porting guide)
+	|   `-- user.txt            (this user's guide)
+	|-- linux/
+	|   `-- board_xxx           (Linux-related files for board XXX)
+	|       `-- kernel-x.x.x    (linux x.x.x support files)
+	|           |-- config      (configuration example files)
+	|           `-- patches     (patches for linux kernel and u-boot)
+	`-- safeg/
+		|-- arm.h               (ARM registers, bits, etc.)
+		|-- crt0-safeg.S        (boot assembly code)
+		|-- Makefile            (SafeG Makefile)
+		|-- safeg.h             (SafeG data types and function prototypes)
+		|-- safeg.lds.S         (SafeG linker script)
+		|-- safeg_measures.h    (SafeG performance measurement macros)
+		|-- safeg.S             (MAIN SafeG CODE)
+		|-- safeg_start.c       (SafeG initialization code)
+		`-- safeg_syscalls.h    (SafeG syscalls API)
+
+4.- Build instructions
+    ==================
+
+In order to build SafeG, an operating system supporting the GNU compilation
+toolchain is required. In particular, the following environment has been
+tested:
+
+	- Ubuntu 10.04
+	    * build-essential package
+	    * mkimage (uboot-mkimage package)
+		* CodeSourcery G++ Lite ARM toolchain 2010.09-51
+			+ arm-none-eabi-gcc 4.5.1
+			+ arm-none-eabi-ld 2.20.51
+
+4.1 Building the Linux kernel (needed if Non-Trust will run Linux)
+    ------------------------------------------------------------
+
+The Linux kernel must be patched to avoid it trying to access trust devices or
+memory (Note: if you do not want to use Linux for the non-trust world, then
+skip this section and go to section 4.4):
+
+	- Uncompress a vanilla kernel supported by SafeG patches
+
+	$ cd linux/board_xxxx/kernel-x.x.x/patches/
+	$ tar jxvf linux-x.x.x.tar.bz2
+
+	- Apply the patches provided by SafeG
+
+	$ cd linux-x.x.x/
+	$ patch -p1 < safeg-linux-x.x.x-all.patch
+
+	- Configure the kernel
+
+	$ mkdir build
+	$ make ARCH=arm CROSS_COMPILE=arm-none-eabi- O=build mrproper
+	$ cp ../../config/linux-x.x.x.config build/.config
+	$ make ARCH=arm CROSS_COMPILE=arm-none-eabi- O=build/ menuconfig
+
+	- Build the kernel image
+
+	(pb1176f) make ARCH=arm CROSS_COMPILE=arm-none-eabi- O=build/ uImage
+	(idea6410) make ARCH=arm CROSS_COMPILE=arm-unknown-linux-gnueabi- \
+               O=build/ zImage
+
+	- The resulting kernel image can be found in "build/arch/arm/boot/"
+
+4.2 Building the Filesystem (needed if there is no prebuilt filesystem)
+    -------------------------------------------------------------------
+
+There are several alternatives to build a filesystem. Here we will use
+buildroot[7] as an example:
+
+	$ apt-get install bison, flex, texinfo
+	$ tar jxvf buildroot-xxx.tar.bz2
+	$ cd buildroot-xxx/
+	$ cp ../linux/board_xxxx/kernel-x.x.x/config/buildroot.config .config
+	$ make menuconfig
+	$ make
+
+If you want to use a certain configuration for busybox (e.g. to support NFS):
+
+	$ make BUSYBOX_CONFIG_FILE=../linux/board_xxx/kernel-x.x.x/config/busybox-nfs.config
+	$ make busybox-menuconfig
+
+It starts doing all the steps automatically (takes sometime..):
+
+	1. Download source files
+	2. Configure cross-compile toolchain
+	3. Build/install cross-compile toolchain
+	4. Build/install selected target packages
+	5. Create a root filesystem in selected formats
+
+All the results are left in a single directory (output/) where the most
+important directories are:
+
+	output/images/                 (filesystem .tar and cramfs)
+	output/staging/usr/arm-linux/  (cross-compilation toolchain)
+
+You can use the cross-compilation toolchain to build your own Linux
+applications:
+
+	$ export PATH=/home/user/buildroot/output/staging/usr/bin/:$PATH
+
+	hello.c:
+		#include <stdio.h>
+		int main() { printf ("Hello World!\n"); return 0;}
+
+	$ arm-linux-gcc hello.c -o hello.exe
+	$ cp hello.exe output/target/root/
+	$ make
+
+4.3 Building u-boot (needed if Non-Trust will run Linux)
+    ----------------------------------------------------
+
+U-boot is used for two different goals in SafeG:
+
+	- Load all the binaries to the board and run them (except if you will
+	  use a debugger such as RVDS to load the binaries).
+	- As the Non-Trust initialization code which loads the Linux kernel
+	  (except if you use NT-ASP instead of Linux on the Non-Trust side)
+
+For the first goal, a standard u-boot image is normally enough. Normally you
+can get prebuilt images for the board. In SafeG's res/prebuilt/ you can
+find them with the name: "prebuilt-(boardname)-t-uboot.[bin,elf]", where
+the "t" indicates that it is run in Trust state. You can compile it from
+the sources as well (for that you need the "arm-unknown-linux-gnueabi-xxx"
+toolchain):
+
+	$ mkdir t-uboot
+	$ tar zxvf ../res/src/u-boot-(boardname)-(version).tgz
+	$ make ARCH=arm CROSS_COMPILE=arm-unknown-linux-gnueabi- distclean
+	$ make ARCH=arm CROSS_COMPILE=arm-unknown-linux-gnueabi- (board)_config
+		e.g.: realview_pb1176_config, smdk6410_config
+	$ make ARCH=arm CROSS_COMPILE=arm-unknown-linux-gnueabi-
+
+This will generate the u-boot binary for the trust version (u-boot) which you
+will probably want to burn into the board's FLASH memory to be executed when
+the board starts.
+
+For the second goal we need to apply a patch to u-boot which depends on the
+board. Usually the patch is just to load u-boot at a different memory region
+so it does not conflict with the trust u-boot memory region. But since this
+u-boot will run on Non-Trust state there maybe restrictions on the peripherals
+and instructions it can execute which require further changes. Non-Trust
+u-boot prebuilt binaries are available at the res/prebuilt directory with
+the name: "prebuilt-(boardname)-nt-uboot.[bin,elf]", where the "nt" indicates
+that it is run in Non-Trust state. You can compile it from the sources as well
+by patching and recompiling:
+
+	$ mkdir nt-uboot
+	$ tar zxvf ../res/src/u-boot-(boardname)-(version).tgz
+	$ patch -p1 < ../linux/board_(boardname)/kernel-2.6.xx/patches/nt-uboot-(boardname).patch
+	$ make ARCH=arm CROSS_COMPILE=arm-unknown-linux-gnueabi- distclean
+	$ make ARCH=arm CROSS_COMPILE=arm-unknown-linux-gnueabi- (board)_config
+		e.g.: realview_pb1176_config, smdk6410_config
+	$ make ARCH=arm CROSS_COMPILE=arm-unknown-linux-gnueabi-
+
+The resulting u-boot binary will be loaded in RAM by the Trust u-boot and it
+will be executed when T-ASP switches to Non-Trust state, through SafeG, for
+the first time.
+
+4.4 Building SafeG
+    --------------
+
+SafeG is built by calling the Makefile at the root directory using the
+following syntaxis:
+
+	make OBJ=obj_safeg_xxxx [VARIABLE=value] [clean] [showtargets] [showsupport]
+
+	VARIABLES:
+	    OBJ=application-directory-with-trust/-and-non-trust/-dirs)
+	    [TOOLPREFIX=prefix-of-arm-toolchain]
+	    [OBJDIR=path-to-asp-obj-dir]
+	    [BINDIR=path-to-export-safeg-binaries]
+	    [BUILD=debug or optimized]
+	    [NONTRUST=linux or asp]
+	    [UBOOTBIN=uboot-binary-file]
+	    [BOARD=BOARDNAME (see make showsupport)]
+
+The default values of the variables are:
+
+	OBJ        ?= obj_safeg_btask
+	OBJDIR     ?= asp/obj
+	BINDIR     ?= safeg
+	BUILD      ?= debug
+	NONTRUST   ?= asp
+	TOOLPREFIX ?= arm-none-eabi-
+	UBOOTBIN   ?= res/prebuilt/board_pb1176/prebuilt-pb1176-nt-uboot
+	BOARD      ?= PB1176
+
+Build examples:
+
+	- T-ASP + Linux on the PB1176 board
+
+	$ make OBJ=obj_safeg_btask TRUST=asp NONTRUST=linux BOARD=PB1176
+
+	- T-ASP + NT-ASP on the IDEA6410 board
+
+	$ make OBJ=obj_safeg_idea TRUST=asp NONTRUST=asp BOARD=IDEA6410
+
+	-T-ASP + Linux on the IDEA6410 board
+
+	$ make OBJ=obj_safeg_idea NONTRUST=linux BOARD=IDEA6410
+
+The previous command generates three executables in the BINDIR directory:
+
+	- trust.[elf,bin]: the trust binary (e.g.: T-ASP binary)
+	- non-trust.[elf,bin]: the non-trust binary (e.g.: u-boot binary)
+	- safeg.[elf,bin]: the safeg monitor binary
+
+Note: In case of baremetal Trust applications, SafeG is directly linked to the
+Trust application. For example, in bare/board_mini6410 a small application
+switching LEDs is linked to a simplified version of SafeG.
+
+5.- Load instructions
+    =================
+
+This section explains how to load and run the binaries that were built in the
+previous section on each of the supported boards.
+
+5.1 Setting a TFTP server (optional)
+    --------------------------------
+
+Loading the binaries from a TFTP server might become handy during the
+development of a system. These are the instructions to make a TFTP server
+in Ubuntu 10.04:
+
+	$ sudo apt-get install tftpd-hpa
+	$ sudo gedit /etc/default/tftpd-hda
+		RUN_DAEMON="yes"
+		OPTIONS="-l -s /var/lib/tftpboot"
+	$ sudo /etc/init.d/tftpd-hpa start
+
+Instead of using our public IP, can install a virtual interface on the same
+ethernet card instead:
+
+	$ sudo ifconfig eth0:1 192.168.0.34 netmask 255.255.255.0
+
+5.2 Setting a NFS server (optional)
+    --------------------------------
+
+We can use the filesystem that we built before through NFS. This might be
+again convenient during the development of a system:
+
+	$ sudo apt-get install nfs-kernel-server
+	$ mkdir nfs && cd nfs
+	$ sudo tar zxvf ../buildroot/output/images/rootfs.arm.tar.gz
+	$ sudo gedit /etc/exports
+		/home/user/nfs *(rw,sync,no_root_squash,no_subtree_check)
+
+Then, modify the kernel boot parameters in u-boot like this:
+
+	bootargs=root=/dev/nfs rw nfsroot=192.168.0.34:/home/dsl/kernels/rootfs/nfs ip=192.168.0.33 mem=128M console=ttyAMA0
+
+5.3 PB1176-JZF board
+    ----------------
+
+Connect the board to the computer using a Serial cable and the following
+configuration (e.g.: picocom --b 38400 /dev/ttyUSB0):
+
+	Baud rate: 38400
+	Data: 8 bit
+	Parity: none
+	Stop: 1 bit
+	Flow control: none
+
+We will see three different ways to load SafeG binaries onto the board:
+
+	1. ARM Realview Debugger (RVDS) or DS-5: this software can be used to
+	   load/run/debug/trace the binaries.
+
+	2. From the FLASH: we will copy the binaries to FLASH and load them to
+	   RAM using u-boot. Format the SD card with FAT16 so it can be read by
+	   the monitor:
+
+		$ cfdisk /dev/sde (create FAT16 partitiom, 06)
+		$ mkdosfs -F 16 /dev/sde1
+
+	   These are the files to copy to the SD card (Note: use short names):
+
+		- u-boot: prebuilt-pb1176-t-uboot-1.3.1.bin
+		- asp: trust.bin (e.g.: prebuilt-pb1176-asp.bin)
+		- ub1176: non-trust.bin (e.g.: prebuilt-pb1176-nt-uboot.bin)
+		- safeg: safeg.bin (e.g.: prebuilt-pb1176-safeg.bin)
+		- linux: zImage (e.g.: prebuilt-pb1176-zimage-2.6.33)
+		- cramfs: buildroot.cramfs (e.g.:prebuilt-pb1176-buildroot.cramfs)
+
+	   From the ARM monitor prompt, open FLASH menu and write the binaries
+	   (Note that you may need to erase the flash before):
+
+		M:\> flash
+		FLASH> write binary m:/u-boot NAME u-boot FLASH_ADDRESS 0x3C080000
+		FLASH> write binary m:/safeg NAME safeg FLASH_ADDRESS 0x3C0C0000
+		FLASH> write binary m:/asp NAME asp FLASH_ADDRESS 0x3C100000
+		FLASH> write binary m:/ub1176 NAME ub1176 FLASH_ADDRESS 0x3C200000
+		FLASH> write binary m:/linux NAME linux FLASH_ADDRESS 0x30040000
+		FLASH> write binary m:/cramfs NAME cramfs FLASH_ADDRESS 0x30440000
+
+		Flash> list images
+		Flash Area Base 0x3C000000
+
+		Address     Name
+		-------     ----
+		0x3C000000  Boot_Monitor
+		0x3C030000  SYSTEM.DAT
+
+		Flash Area Base 0x3C040000
+
+		Address     Name
+		-------     ----
+		0x3C040000  NFU
+		0x3C080000  u-boot
+		0x3C0C0000  safeg
+		0x3C100000  asp
+		0x3C200000  ub1176
+
+		Flash Area Base 0x30000000
+
+		Address     Name
+		-------     ----
+
+		Flash Area Base 0x30040000
+
+		Address     Name
+		-------     ----
+		0x30040000  linux
+		0x30440000  cramfs
+
+	   Note that there are two different u-boot images. The u-boot images were
+	   generated using the instructions at Section 4.3. The difference
+	   between them is that the load/entry point is different so they do not
+	   collide.
+
+	   Then, we start u-boot and load the binaries from the FLASH:
+
+		M:\> flash run u-boot
+		cp 0x3C0C0000 0x10300000 34704 (safeg)
+		cp 0x3C100000 0x10320000 46324 (asp)
+		cp 0x3C200000 0x6000000 97496 (ub1176)
+		go 0x103086a0 (safeg entry: readelf -h safeg.elf)
+
+		When the non-trust is scheduled, the second u-boot (ub1176) is executed
+		and we have to load linux from there:
+
+		ub1176 $ printenv
+		bootargs=root=/dev/mtdblock0 mtdparts=armflash.0:644k@0x440000(cramfs) mem=128M console=ttyAMA0
+		bootcmd=bootm 0x30040000 (from ub1176 prompt)
+
+	   Note: 0x440000 is the offset from the start of the flash area address
+	   and 21088k is the size of the image (it can be obtained with "display image"
+	   in the FLASH menu).
+
+	3. From Ethernet: we will download the binaries through TFTP using u-boot
+	   and use the NFS filesystem.
+
+		FLASH> run u-boot
+
+	   Adjust the configuration:
+
+		u-boot $ setenv ipaddr 192.168.0.33
+		u-boot $ setenv serverip 192.168.0.34
+		u-boot $ saveenv
+
+	   Load the files and run SafeG:
+
+		u-boot $ tftp 0x10300000 safeg.bin
+		u-boot $ tftp 0x10320000 trust.bin
+		u-boot $ tftp 0x6000000 non-trust.bin
+		u-boot $ go 0x10308740 (safeg entry: readelf -h safeg.elf)
+
+	   Again, SafeG initializes and T-ASP starts. At some point, the T-ASP
+	   application will perform a system call to SafeG to switch to the
+	   non-trust OS and u-boot's menu will appear:
+
+		ub1176 $ printenv
+		bootargs=root=/dev/nfs rw nfsroot=192.168.0.34:/home/user/nfs ip=192.168.0.33 mem=128M console=ttyAMA0
+		bootcmd=tftpboot 0x7fc0 uImage; bootm 0x7fc0
+
+5.4 IDEA6410 board
+    --------------
+
+Configure the serial port for 115200bps:
+
+	$ picocom --b 115200 --f hard /dev/ttyS1
+
+The physical memory map once the binaries are loaded will be as follows
+(DRAM has 128MB with base address 0x50000000):
+
+	- Linux:    from 32KB to 120MB  (0x50008000~0x57800000)
+	- SafeG:    from 120MB to 122MB (0x57800000~0x57A00000)
+	- ASP:      from 122MB to 124MB (0x57A00000~0x57C00000)
+	- nt-uboot: from 124MB to 126MB (0x57C00000~0x57E00000)
+	- t-uboot:  from 126MB to 128MB (0x57E00000~0x58000000)
+
+Install u-boot following the board manual (requires Windows to burn the binary
+into the NAND FLASH memory). Set the environment to download from TFTP server:
+
+	SMDK6410 # setenv netmask 255.255.255.0
+	SMDK6410 # setenv ipaddr 192.168.0.33
+	SMDK6410 # setenv serverip 192.168.0.34
+	SMDK6410 # setenv gatewayip 192.168.0.34
+
+Note: another alternative is to burn the binaries in NAND FLASH and then load 
+them with "nand read LOAD_ADDRESS NAND_ADDRESS SIZE" (e.g.: nand read 50008000 
+900000 300000)
+
+	tftp 57800000 safeg.bin
+	tftp 57A00000 trust.bin
+	tftp 57C00000 non-trust.bin
+	tftp 50008000 zImage (not necessary if non-trust is ASP too)
+
+Start SafeG by calling its entry point (readelf -h safeg.elf):
+
+	go 0x578086c0
+
+After SafeG initialization, Trust ASP executes. Eventually Non-Trust side 
+is executed. In case Non-Trust is nt-uboot (it could be also NT-ASP) we need 
+to boot the kernel image with the appropriate parameters:
+
+	- Filesystem in NAND:
+		SMDK6410 # setenv bootargs root=/dev/mtdblock3 rootfstype=yaffs2 init=/init mem=64M console=ttySAC0,115200
+	- NFS filesystem:
+		SMDK6410 # setenv bootargs root=/dev/nfs rw nfsroot=192.168.0.34:/home/dsl/kernels/rootfs/nfs ip=192.168.0.33 mem=64M console=ttySAC0,115200
+
+Once we have configured the parameters in nt-uboot. We jump to linux kernel:
+
+    - Boot command (bootcmd):
+		SMDK6410 # bootm 50008000
+
+Regarding to the filesystem you can use the Ubuntu or Android filesystem that
+is shipped with the board or compile it by yourself using the user's guide.
+
+5.5 MINI6410 board
+    --------------
+
+Mini6410 board has 4 serial ports. We will use UART0 for Linux console and
+UART3 (TTL Connector 4) for a Non-Trust bare application. Configure the
+serial ports for 115200bps on the host:
+
+	$ picocom --b 115200 --f hard /dev/ttyS0
+	$ picocom --b 115200 --f hard /dev/ttyS1
+
+Install Android or Qtopia following the Mini6410 board user's manual. The
+overall procedure is:
+
+    - FLASH a program called Superboot and copy the Images to the SD Card
+    - Boot from the SD Card. Superboot will install the Images in FLASH
+    - Boot from FLASH!
+
+The steps in detail are:
+
+   1. Copy DVD1/Tools to Windows
+   2. Insert SD card in Windows PC
+   3. Write DVD2/images/superboot.bin on the SD Card with DVD1/tools/SD-Flasher
+   4. Copy DVD2/Images/ to the SD Card (or only the ones you want to install)
+   5. Modify SDCard/Images/FriendlyARM.ini (or copy from config/ directory)
+         1. CheckOneButton=No
+         2. Action=install
+         3. OS= Android
+   6. Put the SD Card on the board
+   7. Switch S2: SDBOOT
+   8. Make sure NO USB cable or JTAG cable is connected.
+   9. Switch ON the board. Superboot will install Android on FLASH in 60 seconds (starts with 1 beep and ends with 2 beeps)
+  10. Switch S2: NAND and Reboot
+
+After installing Android/Qtopia we will also have u-boot. We will use u-boot to
+download SafeG and the Trust application. Press a Key to stop u-boot and then
+"q" to exit to u-boot shell. Configure the u-boot shell so that we can download
+files through TFTP.
+
+MINI6410 # setenv bootcmd.nand "nand read.i c0008000 80000 500000;bootm c0008000"
+MINI6410 # setenv bootcmd "tftp 50000000 test.bin; go 50000000"
+MINI6410 # setenv bootdelay 3
+MINI6410 # setenv ipaddr 192.168.0.33
+MINI6410 # setenv serverip 192.168.0.34
+MINI6410 # printenv
+
+bootargs=root=ubi0:FriendlyARM-root ubi.mtd=2 rootfstype=ubifs init=/linuxrc console=ttySAC0,115200 androidboot.console=s3c2410_serial0
+bootcmd.nand=nand read.i c0008000 80000 500000;bootm c0008000
+bootcmd=tftpboot 0xc0008000 zImage; bootm c0008000
+bootdelay=3
+baudrate=115200
+ethaddr=08:90:90:90:90:90
+ipaddr=192.168.0.33
+serverip=192.168.0.34
+netmask=255.255.255.0
+stdin=serial
+stdout=serial
+stderr=serial
+
+The rest of the process to load ASP-SafeG-Linux is the same as IDEA6410. For
+example, compile the following application and load it like with IDEA6410:
+
+	$ make OBJ=obj_safeg_mini NONTRUST=linux BOARD=SAFEG_MINI6410 UBOOTBIN=res/prebuilt/board_mini6410/prebuilt-mini6410-nt-uboot
+	$ sudo cp safeg/*.bin /var/lib/tftpboot/
+
+	UBOOT> tftp 57800000 safeg.bin
+	UBOOT> tftp 57A00000 trust.bin
+	UBOOT> tftp 57C00000 non-trust.bin
+	UBOOT> go 0x57808640 (readelf -h safeg.elf)
+
+We will show here an example of loading a baremetal application with SafeG
+for MINI6410. First, we compile the baremetal example with SafeG:
+
+	$ cd bare/board_mini6410/leds-timer-tcm-safeg
+	$ make
+	$ sudo cp test.bin /var/lib/tftpboot/trust-safeg.bin
+
+We also need to compile and patch non-trust u-boot. This time we will use
+the prebuilt binary:
+
+	$ cp res/prebuilt/board_mini6410/prebuilt-mini6410-nt-uboot.bin /var/lib/tftpboot/miniub.bin
+
+Then we just need to download those binaries and execute:
+
+	$ tftp 50000000 trust-safeg.bin
+	$ tftp 57C00000 miniub.bin
+	$ go 50000000
+
+We will see the LEDs turning ON and OFF while Android/Qtopia is working.
+
+SafeG binaries for MINI6410 can be also loaded/debugged using an Open-JTAG
+dongle. The necessary debug configuration files can be found in the debug/
+directory.
+
+5.6 Kyoto KZM-CA9-01 board
+    ----------------------
+
+SafeG binaries can be loaded using one of the following debuggers:
+
+	- Naviengine + Partner-JET
+	- Realview ICE + RVDS
+	- DStream + DS-5
+
+Debugger initialization and configuration scripts can be found in the
+safeg/debug/board_kzmca901 directory. You have to load and run binary files
+for each core.
+
+An example application is provided in safeg/fmp/obj/obj_safeg_btask. The trust
+world contains several periodic tasks and a background task (BTASK) which
+is in charge of initiating a switch to the Non-Trust world every time it
+becomes scheduled at background priority.
+
+The Non-Trust world can be also FMP or otherwise Linux. These are the
+build instructions for each case:
+
+	- Case a: Trust:FMP Non-trust:FMP
+
+		$ make BOARD=KZMCA9 OBJ=obj_safeg_btask clean
+		$ make BOARD=KZMCA9 OBJ=obj_safeg_btask
+
+	- Case b: Trust:FMP Non-trust:Linux
+
+		$ make BOARD=KZMCA9 OBJ=obj_safeg_btask NONTRUST=linux clean
+		$ make BOARD=KZMCA9 OBJ=obj_safeg_btask NONTRUST=linux
+
+The number of cores used by the application can be configured among 1 to 4
+cores. The default setting is 2 cores. To change the number of cores
+on Trust and Non-Trust FMP, modify the value of TNUM_PRCID in the corresponding
+Makefile.
+
+	CDEFS := $(CDEFS) -DTNUM_PRCID=2
+	fmp/obj/obj_safeg_btask/trust/Makefile
+	fmp/obj/obj_safeg_btask/non_trust/Makefile
+
+If Non-Trust world is used to execute Linux, you need to configure the
+number of cores and recompile the kernel.
+
+	- 1 core: linux/board_kzmca9/kernel-2.6.28/config/a9tc-single_defconfig
+	- 2 cores: linux/board_kzmca9/kernel-2.6.28/config/a9tc-dual-noL2Cache_defconfig
+	- 3 cores: use 2 cores and modify the number with make menuconfig
+
+5.7 Freescale i.mx53 QuickStart board
+    ---------------------------------
+
+SafeG binaries can be loaded using one of the following debuggers:
+
+	- DStream + DS-5 (natively supported)
+	- Open-JTAG
+
+Debugger initialization and configuration scripts can be found in the
+safeg/debug/board_mx53loco directory.
+
+Alternatively you can burn u-boot in flash and then download the binaries
+from u-boot.
+
+6.- Experimental features
+    =====================
+
+6.1 Integrated scheduling
+    ---------------------
+
+This feature enables mixing the priorities of RTOS tasks and Linux sched_fifo
+tasks and interrupts. To enable integrated scheduling in the Linux kernel,
+configure the corresponding boolean in make menuconfig (System Type -->
+RealView platform type --> Enable SafeG extensions --> Inter-OS communications).
+Currently, only the PB1176JZF board supports this configuration.
+
+    $ make ARCH=arm \
+      CROSS_COMPILE=/home/user/app/arm-none-eabi-2007q1-21/bin/arm-none-eabi- \
+      O=/home/user/kernels/linux-2.6.33-working/build/ menuconfig
+
+    $ make ARCH=arm \
+      CROSS_COMPILE=/home/user/app/arm-none-eabi-2007q1-21/bin/arm-none-eabi- \
+      O=/home/user/kernels/linux-2.6.33-working/build/ uImage
+
+When integrated scheduling is enabled the following file is compiled and
+linked to the kernel:
+
+	- linux/safeg/integrated_scheduling.c
+
+Additionally, the file linux/kerne/sched.c is patched to insert a hook.
+
+An example application that uses integrated scheduling can be found at:
+
+	- asp/obj/obj_safeg_intsched
+
+This application can be run with Linux or ASP in the Non-Trust side (for
+testing and for log tracing).
+
+    - make OBJ=obj_safeg_intsched NONTRUST=linux
+    - make OBJ=obj_safeg_intsched NONTRUST=asp
+
+When using Linux in the Non-Trust world, integrated scheduling is disabled
+by default. And must be enable either from a program or through the
+command line by setting a flag in the debugfs filesystem:
+
+    - mount -t debugfs none /sys/kernel/debug/
+    - echo Y > /sys/kernel/debug/safeg/activate_voluntary_return
+
+6.2 Inter-OS communications
+    -----------------------
+
+This feature enables inter-OS communications. Currently, the number of channels
+and messages must be fixed manually in the code. In the future, a static API
+will be added. To enable it on the Linux kernel configure the appropriate
+boolean in make menuconfig (System Type --> RealView platform type -->
+Enable SafeG extensions --> Integrated scheduling) and recompile the kernel:
+
+    $ make ARCH=arm \
+      CROSS_COMPILE=/home/user/app/arm-none-eabi-2007q1-21/bin/arm-none-eabi- \
+      O=/home/user/kernels/linux-2.6.33-working/build/ menuconfig
+
+    $ make ARCH=arm \
+      CROSS_COMPILE=/home/user/app/arm-none-eabi-2007q1-21/bin/arm-none-eabi- \
+      O=/home/user/kernels/linux-2.6.33-working/build/ uImage
+
+Additionally, the linux kernel parameters must be modified to reserve
+an area of memory to perform inter-OS communications. For example by adding
+"mem=64M memmap=64M$64M" to the bootargs.
+
+An example application is provided in:
+
+	- asp/obj/obj_safeg_dualoscom
+
+Compile SafeG and ASP program application as follows:
+
+	- make OBJ=obj_safeg_dualoscom NONTRUST=linux clean
+	- make OBJ=obj_safeg_dualoscom NONTRUST=linux
+
+Compile Linux program as follows:
+
+	- cd asp/obj/obj_safeg_dualoscom/non_trust/
+	- make
+
+Then run the system and wait for Linux to initialize. Create a SafeG
+device (used for inter-OS communications):
+
+	- mknod /dev/safeg c MAJOR 0 (change MAJOR by number in dmesg);
+	- chmod 0664 /dev/safeg
+
+Finally, execute the Linux application (gpos_app.exe).
+
+7.- Future roadmap
+    ==============
+
+The following features will be added in the future:
+
+	- Virtualization introspection Monitor
+	- Ports to development boards
+	- Solutions to Lock-holder preemption on multicore SafeG
+
+8.- References
+    ==========
+
+[1] Enhancing Reliability in Hybrid OS System with Security Hardware,
+K. Nakajima, S. Honda, S. Teshima, and H. Takada. The IEICE Transactions on
+Information Systems, 93(2):7585, 2010-02-01
+
+[2] Building a Secure System using TrustZone Technology, ARM Security
+Technology, RD29-GENC-009492C, ARM Ltd., 2009.
+
+[3] Dual Operating System Architecture for Real-Time Embedded Systems,
+Daniel SANGORRIN, Shinya HONDA, Hiroaki TAKADA. OSPERT 2010 Brussels (Belgium)
+
+[4] AMBA3 TrustZone Protection Controller (BP147) Technical Overview,
+DTO 0015A, ARM Ltd., 2004
+
+[5] AMBA3 TrustZone Interrupt Controller (SP890) Technical Overview,
+DTO 0013B, ARM Ltd., 2008.
+
+[6] "Integrated Scheduling in a Real-Time Embedded Hypervisor",
+Daniel Sangorrin, Shinya Honda and Hiroaki Takada, 18th SIGEMB,
+Hakodate Mirai University, Aug 2010.
+
+[7] Buildroot. http://buildroot.uclibc.org/downloads/buildroot.html

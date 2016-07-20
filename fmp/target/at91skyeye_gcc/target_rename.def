@@ -1,0 +1,20 @@
+# target_config.c 
+target_mprc_initialize
+target_initialize
+target_exit
+x_config_int
+default_int_handler
+
+# target_support.S
+target_exc_handler
+target_ret_exc
+target_ret_int
+irq_handler
+
+# kernel_cfg.c
+p_inh_table
+p_ipm_mask_table
+p_inh_ipm_table
+p_tacb_table
+
+INCLUDE "arm_gcc/common/core"

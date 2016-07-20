@@ -1,0 +1,26 @@
+#
+#  @(#) $Id$
+# 
+
+#
+#		Makefile のコア依存部（SH2A用）
+#
+
+#
+#  コンパイルオプション
+#
+COPTS := $(COPTS) -m2a-nofpu
+
+#  レジスタバンクを使用する場合は、以下の行を有効にする。
+CDEFS := $(CDEFS) -DUSE_BANKED_REG
+
+#
+#  カーネルに関する定義
+#
+KERNEL_COBJS := $(KERNEL_COBJS) sh2a_dual_config.o
+
+#
+#  プロセッサ依存部のインクルード
+#
+include $(SRCDIR)/arch/$(PRC)_$(TOOL)/Makefile.prc
+

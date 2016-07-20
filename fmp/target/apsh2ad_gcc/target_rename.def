@@ -1,0 +1,2 @@
+INCLUDE "sh2a_dual_gcc/prc"
+target_mprc_initialize

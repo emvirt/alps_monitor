@@ -1,0 +1,7 @@
+E_PACKAGE fmp_apsh2ad_gcc
+VERSION %date
+
+INCLUDE ../../MANIFEST
+INCLUDE ../../arch/sh2a_dual_gcc/MANIFEST
+INCLUDE ../../pdic/sh/MANIFEST
+INCLUDE ../../cfg/MANIFEST

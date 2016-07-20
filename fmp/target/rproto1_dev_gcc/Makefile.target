@@ -1,0 +1,117 @@
+#
+#  @(#) $Id: Makefile.target 512 2010-02-01 05:33:27Z ertl-honda $
+# 
+
+#
+#		Makefile のターゲット依存部（RPROTO1_DEV用）
+#
+
+#
+#  ROM化する場合はTRUEに
+#
+ROM_BOOT = 
+
+#
+#  FPUを使用する場合はTRUEに
+#
+FPU_ENABLE = 
+
+#
+#  ログトレースを有効にする場合はTRUEに
+#
+TOPPERS_TRACE_ENABLE =
+
+#
+#  FPUのモードの指定
+#   SINGLE      : ディフォルトは単精度
+#   SINGLE_ONLY : 単精度のみをサポート
+#   DOUBLE      : ディフォルトは倍精度
+FPU_MODE = DOUBLE
+
+#
+#  GNU開発環境のターゲットアーキテクチャの定義
+#
+GCC_TARGET = sh-elf
+
+#
+#  コンパイルオプション
+#
+INCLUDES := $(INCLUDES) -I$(SRCDIR)/target/$(TARGET)
+COPTS := $(COPTS)  -ml 
+LDFLAGS := $(LDFLAGS)  -ml
+#HEWはLMA/VMAを理解できないため，DATAの初期化は行わない
+CDEFS := $(CDEFS) -DRPROTO1 -DTOPPERS_OMIT_DATA_INIT
+
+#
+#  ボード名，プロセッサ名，開発環境名の定義
+#
+BOARD = rproto1_dev
+PRC   = sh4a
+TOOL  = gcc
+
+#
+#  プロセッサの種類
+#
+PRC_ARCH = SH4A
+
+#
+#  ROM化時は ROM_BOOT を定義する
+#
+ifeq ($(ROM_BOOT),TRUE)
+	CDEFS := $(CDEFS) -DROM_BOOT
+endif
+
+#
+#  カーネルに関する定義
+#
+KERNEL_DIR := $(KERNEL_DIR) $(SRCDIR)/target/$(TARGET) \
+						$(SRCDIR)/pdic/sh 
+KERNEL_ASMOBJS := $(KERNEL_ASMOBJS) target_support.o 
+KERNEL_COBJS := $(KERNEL_COBJS) target_config.o 
+
+#
+#  システムサービスに関する定義
+#
+SYSSVC_COBJS := $(SYSSVC_COBJS) target_serial.o sh_scif.o
+
+#
+#  各セグメントの開始アドレスの定義
+#
+TEXT_START_ADDRESS=0x08000000
+DATA_START_ADDRESS=0x08050000
+
+#
+#  リンカスクリプトの定義
+#
+LDSCRIPT = $(SRCDIR)/arch/$(PRC)_$(TOOL)/shlelf.ld
+
+#
+#  スタートアップモジュールに関する定義
+#
+#  slhlef.ldに「STARTUP(start.o)」を記述したため，スタートアップモジュー
+#  ルの名前をHIDDEN_OBJSに定義する．また，LDFLAGSに-nostdlibを追加している．
+#
+HIDDEN_OBJS = start.o
+
+$(HIDDEN_OBJS): %.o: %.S
+	$(CC) -c $(CFLAGS) $(KERNEL_CFLAGS) $<
+
+$(HIDDEN_OBJS:.o=.d): %.d: %.S
+	@$(PERL) $(SRCDIR)/utils/makedep -C $(CC) $(MAKEDEP_OPTS)\
+		-O "$(CFLAGS) $(KERNEL_CFLAGS)" $< >> Makefile.depend
+
+LDFLAGS := -nostdlib $(LDFLAGS)
+
+#
+#  トレースログ記録のサンプルコードに関する定義
+#
+ifeq ($(ENABLE_TRACE),true)
+      COPTS := $(COPTS) -DTOPPERS_ENABLE_TRACE
+      KERNEL_DIR := $(KERNEL_DIR) $(SRCDIR)/arch/logtrace
+      KERNEL_COBJS := $(KERNEL_COBJS) trace_config.o trace_dump.o
+endif
+
+#
+#  プロセッサ依存部のインクルード
+#
+include $(SRCDIR)/arch/$(PRC)_$(TOOL)/Makefile.prc

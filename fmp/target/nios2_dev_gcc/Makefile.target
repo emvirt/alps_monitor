@@ -1,0 +1,74 @@
+#
+#  @(#) $Id: Makefile.target 576 2010-04-26 02:06:10Z ertl-honda $
+# 
+
+#
+#		Makefile のターゲット依存部（NIOS2_DEV用）
+#
+
+#
+#  ボード名の定義
+#
+BOARD = nios2_dev_1s40
+#BOARD = nios2_dev_3c25
+#BOARD = nios2_dev_3c120
+
+#
+#  ボード毎に設定が異なる項目
+#
+ifeq ($(BOARD),nios2_dev_1s40)
+	COPTS := $(COPTS) -mhw-mulx
+	CDEFS := $(CDEFS) -DTOPPERS_NIOS2_DEV_1S40
+	LDSCRIPT = $(TARGETDIR)/nios2_dev_1s40.l
+endif
+
+ifeq ($(BOARD),nios2_dev_3c25)
+	COPTS := $(COPTS) -mno-hw-mulx
+	CDEFS := $(CDEFS) -DTOPPERS_NIOS2_DEV_3C25
+	LDSCRIPT = $(TARGETDIR)/nios2_dev_3c25.l
+endif
+
+ifeq ($(BOARD),nios2_dev_3c120)
+	COPTS := $(COPTS) -mno-hw-mulx
+	LDSCRIPT = $(TARGETDIR)/nios2_dev_3c120.l
+endif
+
+#
+#  コンパイルオプション
+#
+INCLUDES := $(INCLUDES) -I$(TARGETDIR)
+COPTS := $(COPTS)
+LDFLAGS := $(LDFLAGS)  -L$(TARGETDIR)
+
+#
+#  カーネルに関する定義
+#
+KERNEL_DIR := $(KERNEL_DIR) $(TARGETDIR)
+KERNEL_ASMOBJS := $(KERNEL_ASMOBJS)
+KERNEL_COBJS := $(KERNEL_COBJS) target_config.o target_timer.o
+
+#
+#  システムサービスに関する定義
+#
+SYSSVC_DIR := $(SYSSVC_DIR) $(TARGETDIR)
+SYSSVC_COBJS := $(SYSSVC_COBJS) jtag_uart.o target_serial.o
+
+#
+#  トレースログに関する設定
+#
+ifeq ($(ENABLE_TRACE),true)
+      COPTS := $(COPTS) -DTOPPERS_ENABLE_TRACE
+      KERNEL_DIR := $(KERNEL_DIR) $(SRCDIR)/arch/logtrace
+      KERNEL_COBJS := $(KERNEL_COBJS) trace_config.o trace_dump.o
+endif
+
+#
+#  依存関係の定義
+#
+kernel_cfg.timestamp: $(TARGETDIR)/target.tf
+$(OBJFILE): $(TARGETDIR)/target_check.tf
+
+#
+#  チップ依存部のインクルード
+#
+include $(SRCDIR)/arch/nios2_gcc/Makefile.prc

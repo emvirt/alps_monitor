@@ -1,0 +1,14 @@
+start_sync
+target_mprc_initialize
+ret_int
+ret_exc
+inh_tbl
+int_iipm_tbl
+ipr_info_tbl
+exch_tbl
+lock_flag
+saved_iipm
+undefined_expevt
+undefined_interrupt
+x_config_int
+p_spcb_table
